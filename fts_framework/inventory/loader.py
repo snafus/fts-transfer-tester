@@ -7,17 +7,22 @@ Reads a plain-text file of source Physical File Names (PFNs), one per line.
 Empty lines and lines beginning with ``#`` are ignored.  Duplicate PFNs are
 rejected to prevent accidental double-submission.
 
-Expected file format::
+Two line formats are accepted and may be mixed within the same file::
 
-    # Optional comment
+    # URL-only
     https://storage.example.org/data/file001.dat
-    https://storage.example.org/data/file002.dat
-    ...
+
+    # URL with pre-supplied ADLER32 checksum (8-char hex or adler32:<hex>)
+    https://storage.example.org/data/file002.dat,adler32:a1b2c3d4
+    https://storage.example.org/data/file003.dat,a1b2c3d4
+
+When checksums are present the runner skips the Want-Digest HEAD fetch and
+uses them directly in the submission payload.
 
 Usage::
 
     from fts_framework.inventory.loader import load
-    pfns = load("/path/to/sources.txt")
+    pfns, checksums = load("/path/to/sources.txt")
 """
 
 import logging
@@ -28,31 +33,41 @@ logger = logging.getLogger(__name__)
 
 
 def load(path):
-    # type: (str) -> list
-    """Load and return the list of source PFNs from *path*.
+    # type: (str) -> tuple
+    """Load source PFNs and any pre-supplied checksums from *path*.
 
     Lines are stripped of leading/trailing whitespace.  Blank lines and lines
-    starting with ``#`` are silently skipped.  All remaining lines are treated
-    as PFNs.
+    starting with ``#`` are silently skipped.  Each remaining line is either a
+    bare PFN or a ``pfn,checksum`` pair.
 
     Args:
         path (str): Path to the PFN inventory file.
 
     Returns:
-        list[str]: Non-empty list of unique PFN strings, in file order.
+        tuple: ``(pfns, checksums)`` where *pfns* is a non-empty list of PFN
+            strings in file order and *checksums* is a dict mapping PFN to
+            ``"adler32:<8-hex>"`` for lines that supplied a checksum.  The
+            dict is empty when no checksums are present in the file.
 
     Raises:
         InventoryError: If the file cannot be read, contains no PFNs after
-            filtering, or contains duplicate entries.
+            filtering, contains duplicate entries, or contains a malformed
+            checksum value.
     """
     logger.info("Loading PFN inventory from: %s", path)
 
     lines = _read_lines(path)
-    pfns = _parse(lines)
+    pfns, checksums = _parse(lines)
     _validate(pfns, path)
 
-    logger.info("Loaded %d PFNs from %s", len(pfns), path)
-    return pfns
+    if checksums:
+        logger.info(
+            "Loaded %d PFNs from %s (%d with pre-supplied checksums)",
+            len(pfns), path, len(checksums),
+        )
+    else:
+        logger.info("Loaded %d PFNs from %s", len(pfns), path)
+    return pfns, checksums
 
 
 # ---------------------------------------------------------------------------
@@ -76,15 +91,58 @@ def _read_lines(path):
 
 
 def _parse(lines):
-    # type: (list) -> list
-    """Strip, filter blank lines and comments, return remaining entries."""
+    # type: (list) -> tuple
+    """Strip, filter blank lines and comments, parse pfn and optional checksum.
+
+    Returns:
+        tuple: ``(pfns, checksums)`` — list of PFN strings and dict of
+            PFN → ``"adler32:<hex>"`` for lines that included a checksum.
+    """
     pfns = []
+    checksums = {}
     for line in lines:
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        pfns.append(stripped)
-    return pfns
+        pfn, checksum = _parse_line(stripped)
+        pfns.append(pfn)
+        if checksum is not None:
+            checksums[pfn] = checksum
+    return pfns, checksums
+
+
+def _parse_line(stripped):
+    # type: (str) -> tuple
+    """Return ``(pfn, checksum_or_None)`` for a single non-blank, non-comment line."""
+    if "," in stripped:
+        pfn, raw = stripped.split(",", 1)
+        return pfn.strip(), _normalise_checksum(pfn.strip(), raw.strip())
+    return stripped, None
+
+
+def _normalise_checksum(pfn, raw):
+    # type: (str, str) -> str
+    """Normalise a checksum value from an inventory line to ``adler32:<8-hex>``.
+
+    Accepts ``adler32:<8-hex>`` (canonical) or a bare ``<8-hex>`` string.
+
+    Raises:
+        InventoryError: If the value cannot be parsed as a valid ADLER32 hex.
+    """
+    if raw.lower().startswith("adler32:"):
+        hex_part = raw[8:]
+    else:
+        hex_part = raw
+    if len(hex_part) == 8:
+        try:
+            int(hex_part, 16)
+            return "adler32:{}".format(hex_part.lower())
+        except ValueError:
+            pass
+    raise InventoryError(
+        "Invalid checksum {!r} for PFN {!r}: "
+        "expected adler32:<8-hex> or bare 8-character hex string".format(raw, pfn)
+    )
 
 
 def _validate(pfns, path):

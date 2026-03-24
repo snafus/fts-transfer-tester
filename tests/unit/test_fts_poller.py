@@ -356,12 +356,28 @@ class TestBackoff:
         assert len(client.get_calls) == 2
 
     def test_http_error_propagates(self, monkeypatch):
-        """Permanent HTTP errors (e.g. 4xx) must not be silently swallowed."""
+        """Permanent HTTP errors (non-transient, no response) must propagate."""
         import fts_framework.fts.poller as mod
         monkeypatch.setattr(mod.time, "sleep", lambda s: None)
         client = _FakeClient([requests.HTTPError("403 Forbidden")])
         with pytest.raises(requests.HTTPError):
             poll_to_completion([_subjob("job-1")], client, _config())
+
+    def test_transient_http_error_retried(self, monkeypatch):
+        """HTTPError with a transient status (502/503/504) must be swallowed and retried."""
+        import fts_framework.fts.poller as mod
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+
+        # Build an HTTPError that carries a response with status 503
+        fake_response = requests.models.Response()
+        fake_response.status_code = 503
+        transient_exc = requests.HTTPError("503 Service Unavailable",
+                                           response=fake_response)
+
+        client = _FakeClient([transient_exc, {"job_state": "FINISHED"}])
+        result = poll_to_completion([_subjob("job-1")], client, _config())
+        assert result[0]["status"] == "FINISHED"
+        assert len(client.get_calls) == 2
 
     def test_transient_timeout_retried(self, monkeypatch):
         """requests.Timeout (W1/W2) must be swallowed and retried next round."""

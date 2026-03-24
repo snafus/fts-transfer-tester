@@ -4,7 +4,9 @@ Unit tests for fts_framework.inventory.loader.
 
 import pytest
 
-from fts_framework.inventory.loader import load, _parse, _validate
+from fts_framework.inventory.loader import (
+    load, _parse, _validate, _normalise_checksum,
+)
 from fts_framework.exceptions import InventoryError
 
 
@@ -25,32 +27,94 @@ def write_pfns(lines, path):
 class TestParse:
     def test_returns_pfns_in_order(self):
         lines = ["https://a.example.org/f1.dat\n", "https://a.example.org/f2.dat\n"]
-        assert _parse(lines) == [
+        pfns, checksums = _parse(lines)
+        assert pfns == [
             "https://a.example.org/f1.dat",
             "https://a.example.org/f2.dat",
         ]
+        assert checksums == {}
 
     def test_skips_blank_lines(self):
         lines = ["https://a.example.org/f1.dat\n", "\n", "   \n",
                  "https://a.example.org/f2.dat\n"]
-        result = _parse(lines)
-        assert len(result) == 2
+        pfns, _ = _parse(lines)
+        assert len(pfns) == 2
 
     def test_skips_comment_lines(self):
         lines = ["# this is a comment\n", "https://a.example.org/f1.dat\n"]
-        result = _parse(lines)
-        assert len(result) == 1
-        assert result[0] == "https://a.example.org/f1.dat"
+        pfns, _ = _parse(lines)
+        assert len(pfns) == 1
+        assert pfns[0] == "https://a.example.org/f1.dat"
 
     def test_strips_leading_trailing_whitespace(self):
         lines = ["  https://a.example.org/f1.dat  \n"]
-        assert _parse(lines) == ["https://a.example.org/f1.dat"]
+        pfns, _ = _parse(lines)
+        assert pfns == ["https://a.example.org/f1.dat"]
 
     def test_empty_input_returns_empty_list(self):
-        assert _parse([]) == []
+        pfns, checksums = _parse([])
+        assert pfns == []
+        assert checksums == {}
 
     def test_all_comments_returns_empty(self):
-        assert _parse(["# comment\n", "# another\n"]) == []
+        pfns, checksums = _parse(["# comment\n", "# another\n"])
+        assert pfns == []
+        assert checksums == {}
+
+    def test_url_checksum_hex_parsed(self):
+        lines = ["https://a.example.org/f1.dat,a1b2c3d4\n"]
+        pfns, checksums = _parse(lines)
+        assert pfns == ["https://a.example.org/f1.dat"]
+        assert checksums == {"https://a.example.org/f1.dat": "adler32:a1b2c3d4"}
+
+    def test_url_checksum_canonical_parsed(self):
+        lines = ["https://a.example.org/f1.dat,adler32:a1b2c3d4\n"]
+        pfns, checksums = _parse(lines)
+        assert checksums == {"https://a.example.org/f1.dat": "adler32:a1b2c3d4"}
+
+    def test_mixed_lines_partial_checksums(self):
+        lines = [
+            "https://a.example.org/f1.dat,adler32:a1b2c3d4\n",
+            "https://a.example.org/f2.dat\n",
+        ]
+        pfns, checksums = _parse(lines)
+        assert len(pfns) == 2
+        assert len(checksums) == 1
+        assert "https://a.example.org/f1.dat" in checksums
+        assert "https://a.example.org/f2.dat" not in checksums
+
+    def test_checksum_uppercase_normalised_to_lowercase(self):
+        lines = ["https://a.example.org/f1.dat,A1B2C3D4\n"]
+        _, checksums = _parse(lines)
+        assert checksums["https://a.example.org/f1.dat"] == "adler32:a1b2c3d4"
+
+
+class TestNormaliseChecksum:
+    PFN = "https://a.example.org/f.dat"
+
+    def test_bare_hex_accepted(self):
+        assert _normalise_checksum(self.PFN, "a1b2c3d4") == "adler32:a1b2c3d4"
+
+    def test_canonical_form_accepted(self):
+        assert _normalise_checksum(self.PFN, "adler32:a1b2c3d4") == "adler32:a1b2c3d4"
+
+    def test_canonical_uppercase_prefix_accepted(self):
+        assert _normalise_checksum(self.PFN, "ADLER32:a1b2c3d4") == "adler32:a1b2c3d4"
+
+    def test_result_always_lowercase(self):
+        assert _normalise_checksum(self.PFN, "A1B2C3D4") == "adler32:a1b2c3d4"
+
+    def test_too_short_raises(self):
+        with pytest.raises(InventoryError, match="Invalid checksum"):
+            _normalise_checksum(self.PFN, "a1b2c3")
+
+    def test_too_long_raises(self):
+        with pytest.raises(InventoryError, match="Invalid checksum"):
+            _normalise_checksum(self.PFN, "a1b2c3d4e5")
+
+    def test_non_hex_raises(self):
+        with pytest.raises(InventoryError, match="Invalid checksum"):
+            _normalise_checksum(self.PFN, "g1b2c3d4")
 
 
 # ---------------------------------------------------------------------------
@@ -109,9 +173,10 @@ class TestLoad:
             "https://storage.example.org/data/file001.dat",
             "https://storage.example.org/data/file002.dat",
         ], str(p))
-        pfns = load(str(p))
+        pfns, checksums = load(str(p))
         assert len(pfns) == 2
         assert pfns[0] == "https://storage.example.org/data/file001.dat"
+        assert checksums == {}
 
     def test_load_skips_comments_and_blanks(self, tmp_path):
         p = tmp_path / "sources.txt"
@@ -123,13 +188,13 @@ class TestLoad:
             "# inline comment",
             "https://storage.example.org/data/file002.dat",
         ], str(p))
-        pfns = load(str(p))
+        pfns, _ = load(str(p))
         assert len(pfns) == 2
 
     def test_load_single_pfn(self, tmp_path):
         p = tmp_path / "sources.txt"
         write_pfns(["https://storage.example.org/data/only.dat"], str(p))
-        pfns = load(str(p))
+        pfns, _ = load(str(p))
         assert pfns == ["https://storage.example.org/data/only.dat"]
 
     def test_load_empty_file_raises(self, tmp_path):
@@ -165,5 +230,22 @@ class TestLoad:
         ]
         p = tmp_path / "sources.txt"
         write_pfns(pfn_list, str(p))
-        result = load(str(p))
-        assert result == pfn_list  # order is preserved; sorting is done by planner
+        pfns, _ = load(str(p))
+        assert pfns == pfn_list  # order is preserved; sorting is done by planner
+
+    def test_load_with_checksums(self, tmp_path):
+        p = tmp_path / "sources.txt"
+        write_pfns([
+            "https://storage.example.org/data/file001.dat,adler32:a1b2c3d4",
+            "https://storage.example.org/data/file002.dat,deadbeef",
+        ], str(p))
+        pfns, checksums = load(str(p))
+        assert len(pfns) == 2
+        assert checksums["https://storage.example.org/data/file001.dat"] == "adler32:a1b2c3d4"
+        assert checksums["https://storage.example.org/data/file002.dat"] == "adler32:deadbeef"
+
+    def test_load_invalid_checksum_raises(self, tmp_path):
+        p = tmp_path / "sources.txt"
+        write_pfns(["https://storage.example.org/data/file001.dat,notahex!"], str(p))
+        with pytest.raises(InventoryError, match="Invalid checksum"):
+            load(str(p))

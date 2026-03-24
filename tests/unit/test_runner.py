@@ -436,7 +436,7 @@ def _install_run_campaign_mocks(monkeypatch, tmp_path,
         )
         monkeypatch.setattr(
             "fts_framework.inventory.loader.load",
-            lambda path: ["https://src/f1"],
+            lambda path: (["https://src/f1"], {}),
         )
         monkeypatch.setattr(
             "fts_framework.destination.planner.plan",
@@ -727,6 +727,23 @@ class TestRunCampaign:
         )
         config = _base_config()
         config["transfer"]["verify_checksum"] = "target"
+        from fts_framework.runner import run_campaign
+        run_campaign(config, runs_dir=str(tmp_path))
+        assert fetch_calls == []
+
+    def test_supplied_checksums_skip_fetch(self, tmp_path, monkeypatch):
+        _install_run_campaign_mocks(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            "fts_framework.inventory.loader.load",
+            lambda path: (["https://src/f1"], {"https://src/f1": "adler32:a1b2c3d4"}),
+        )
+        fetch_calls = []
+        monkeypatch.setattr(
+            "fts_framework.checksum.fetcher.fetch_all",
+            lambda pfns, session, config: fetch_calls.append(pfns) or {},
+        )
+        config = _base_config()
+        config["transfer"]["verify_checksum"] = "both"
         from fts_framework.runner import run_campaign
         run_campaign(config, runs_dir=str(tmp_path))
         assert fetch_calls == []

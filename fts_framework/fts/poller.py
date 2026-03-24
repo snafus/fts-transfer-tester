@@ -106,8 +106,18 @@ def poll_to_completion(subjobs, fts_client, config):
                 job_data = fts_client.get("/jobs/{}".format(job_id))
             except TokenExpiredError:
                 raise
-            except (req_lib.ConnectionError, req_lib.Timeout) as exc:
-                # Transient network errors — log and retry on next round.
+            except req_lib.RequestException as exc:
+                # Re-raise permanent HTTP errors (non-transient status codes).
+                # Swallow only: ConnectionError, Timeout, and HTTPError whose
+                # status code is in the transient set (429/502/503/504) —
+                # these arise when fts_request_with_retry exhausts its retries
+                # on a gateway-level failure while the job has already finished.
+                if isinstance(exc, req_lib.HTTPError):
+                    status = getattr(
+                        getattr(exc, "response", None), "status_code", None
+                    )
+                    if status not in (429, 502, 503, 504):
+                        raise
                 logger.warning(
                     "Transient error polling job %s: %s — will retry next round",
                     job_id, exc,

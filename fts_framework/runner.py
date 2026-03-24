@@ -287,18 +287,32 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
         logger.info("Starting new run %s", run_id)
         store.init_run_directory(run_id, config, runs_dir=runs_dir)
 
-        pfns = inventory_loader.load(config["transfer"]["source_pfns_file"])
+        pfns, supplied_checksums = inventory_loader.load(
+            config["transfer"]["source_pfns_file"]
+        )
         mapping = dest_planner.plan(pfns, config)
 
-        if config.get("transfer", {}).get("verify_checksum") in ("none", "target"):
-            logger.info("verify_checksum=%s — skipping pre-submission checksum fetch",
-                        config.get("transfer", {}).get("verify_checksum"))
+        verify_checksum = config.get("transfer", {}).get("verify_checksum")
+        if verify_checksum in ("none", "target"):
+            logger.info(
+                "verify_checksum=%s — skipping pre-submission checksum fetch",
+                verify_checksum,
+            )
             checksums = {}
+        elif supplied_checksums:
+            logger.info(
+                "Using %d pre-supplied checksum(s) from inventory file "
+                "— skipping Want-Digest fetch",
+                len(supplied_checksums),
+            )
+            checksums = supplied_checksums
         else:
             source_session = fts_client_mod.build_session(
                 config["tokens"]["source_read"], ssl_verify,
             )
-            checksums = checksum_fetcher.fetch_all(list(mapping.keys()), source_session, config)
+            checksums = checksum_fetcher.fetch_all(
+                list(mapping.keys()), source_session, config
+            )
 
         store.write_manifest(
             run_id, mapping, config,
