@@ -13,6 +13,7 @@ Production-grade, automation-first FTS3 transfer benchmarking framework written 
 - [Inventory File Format](#inventory-file-format)
 - [Configuration Reference](#configuration-reference)
 - [CLI Usage](#cli-usage)
+- [Sequence Runner](#sequence-runner)
 - [Programmatic Usage](#programmatic-usage)
 - [Run Directory Layout](#run-directory-layout)
 - [Reports](#reports)
@@ -41,6 +42,7 @@ Production-grade, automation-first FTS3 transfer benchmarking framework written 
 - **ADLER32 checksums** — fetched via WebDAV `Want-Digest` HEAD requests before submission, verified by FTS3 end-to-end
 - **SSL verification control** — `true | false | /path/to/ca-bundle.pem`
 - **Console, JSON, Markdown, HTML, CSV, and timeseries CSV reports**
+- **Parameter-sweep sequence runner** — run a baseline config across a sweep of parameters (cartesian or zip) with per-case trial repetition and resumption
 - **Python 3.6.8 compatible** — no dataclasses, no walrus operator, no numpy
 
 ---
@@ -311,6 +313,92 @@ fts-run campaign.yaml   # with run.run_id set in YAML to the existing run_id
 # Pipe JSON report to jq
 cat runs/<run_id>/metrics/snapshot.json | jq '.success_rate'
 ```
+
+---
+
+## Sequence Runner
+
+The sequence runner executes a baseline campaign config repeatedly across a sweep of parameter variations, with configurable trial repetition and full resumption support.
+
+```
+fts-sequence <params> [options]
+```
+
+| Argument | Description |
+|---|---|
+| `params` | Path to sequence parameter YAML file (required) |
+| `--resume SEQUENCE_DIR` | Resume an interrupted sequence from its output directory |
+| `--runs-dir DIR` | Base directory for individual run outputs (default: `runs/`) |
+| `--log-level LEVEL` | Logging verbosity (default: `INFO`) |
+| `--token TOKEN` | Shared bearer token for all roles |
+| `--fts-submit-token TOKEN` | Per-role FTS3 submission token |
+| `--source-read-token TOKEN` | Per-role source-read token |
+| `--dest-write-token TOKEN` | Per-role destination-write token |
+
+### Sequence parameter file
+
+```yaml
+baseline_config: "config/my_campaign.yaml"
+
+sequence:
+  trials: 3          # repeat each case N times (for statistical reliability)
+  label: "scale_test"
+
+  sweep:
+    mode: cartesian  # cartesian (default) | zip
+    parameters:
+      # Explicit list:
+      transfer.max_files: [100, 200, 500]
+      # Different source file sets:
+      # transfer.source_pfns_file: ["small_files.txt", "large_files.txt"]
+      # Integer range shorthand (inclusive stop): generates [50, 100, 150, 200]
+      # transfer.chunk_size: {range: [50, 200, 50]}
+
+  output:
+    base_dir: "sequences"
+```
+
+**Sweep modes:**
+- `cartesian` — full cross-product of all parameter lists. The example above produces 3 cases × 3 trials = 9 runs.
+- `zip` — elements paired positionally; all lists must have equal length. Useful when parameters are logically coupled (e.g. file count + matching source file).
+
+**Parameter keys** use dot-notation matching the baseline config structure (e.g. `transfer.max_files`, `transfer.source_pfns_file`).  Any scalar value in the baseline config can be overridden.
+
+### Output layout
+
+```
+sequences/<sequence_id>/
+    params.yaml             copy of the sequence parameter file
+    state.json              resumption state (one entry per trial)
+    reports/
+        summary.md
+        summary.json
+        summary.csv         one row per trial: params + key metrics
+```
+
+Individual campaign runs are written to `runs/<run_id>/` as normal.
+
+### Resumption
+
+Each trial is recorded in `state.json` as `pending | running | completed | failed` before it starts.  A trial left in `running` state (process interrupted mid-run) is treated as pending on resume.
+
+```bash
+# Start a sequence
+fts-sequence params.yaml
+
+# Resume after interruption
+fts-sequence params.yaml --resume sequences/20260324_abc123_scale_test/
+```
+
+### Summary reports
+
+The sequence reporter reads `metrics/snapshot.json` from each completed trial and produces:
+
+- **`summary.csv`** — one row per trial with all case parameters and key metrics (`success_rate`, `throughput_mean/p50/p90/stddev`, `campaign_wall_s`, etc.)
+- **`summary.json`** — full structured data including per-case aggregates
+- **`summary.md`** — human-readable table with per-case mean ± stdev across trials
+
+Failed trials are excluded from per-case aggregates but appear in the raw runs table.
 
 ---
 
@@ -620,10 +708,19 @@ Derived from file `start_time`/`finish_time` timestamps using a difference-array
 
 ## Exit Codes
 
+### `fts-run`
+
 | Code | Meaning |
 |---|---|
 | `0` | Campaign completed and `threshold_passed = true` |
 | `1` | Campaign completed but `threshold_passed = false`, or campaign raised an unhandled exception |
+
+### `fts-sequence`
+
+| Code | Meaning |
+|---|---|
+| `0` | Sequence loop completed (individual trial failures are logged and do not affect exit code) |
+| `1` | Unhandled exception in the sequence runner itself (e.g. invalid params file, unreadable baseline config) |
 
 ---
 
@@ -649,14 +746,16 @@ Integration tests require a live FTS3 endpoint:
 FTS_INTEGRATION_ENDPOINT=https://fts.example.org:8446 pytest tests/integration/ -v
 ```
 
-**671 unit tests** cover all modules: config loader, inventory, destination planner, checksum fetcher, FTS client, submission (including 500-recovery), poller, collector, persistence, resume controller, metrics engine, cleanup manager, reporting renderer, and runner orchestration.
+**775 unit tests** cover all modules: config loader, inventory, destination planner, checksum fetcher, FTS client, submission (including 500-recovery), poller, collector, persistence, resume controller, metrics engine, cleanup manager, reporting renderer, runner orchestration, and sequence runner (loader, state, reporter).
 
 ---
 
 ## Architecture Overview
 
 ```
-runner.py  (top-level orchestration)
+sequence/runner.py  (sequence orchestration — wraps runner.py per trial)
+│
+runner.py  (single-campaign orchestration)
 │
 ├── config/loader.py          Load and validate YAML config
 ├── inventory/loader.py       Load and validate source PFN list
@@ -672,6 +771,11 @@ runner.py  (top-level orchestration)
 ├── metrics/engine.py         Pure metric computation from FileRecord list
 ├── reporting/renderer.py     Console, JSON, Markdown, HTML report generation
 ├── cleanup/manager.py        WebDAV HTTP DELETE for pre/post cleanup
+├── sequence/
+│   ├── loader.py             Parse sequence params; generate cases (cartesian/zip)
+│   ├── state.py              state.json persistence and resumption tracking
+│   ├── runner.py             Outer sweep loop; apply overrides; call run_campaign()
+│   └── reporter.py           Aggregate trial snapshots; write summary reports
 └── exceptions.py             Typed exception hierarchy
 ```
 
