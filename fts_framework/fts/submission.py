@@ -248,13 +248,13 @@ def submit_with_500_recovery(fts_client, payload, config, run_id, chunk_index, r
         # integer time_window.  Consistent with resume/controller.py.
         scan_window_h = max(1, scan_window_s // 3600 + 1)
 
-        jobs = fts_client.get(
-            "/jobs",
-            params={
-                "time_window": scan_window_h,
-                "state_in": "SUBMITTED,READY,ACTIVE,FINISHED,FAILED,FINISHEDDIRTY",
-            },
+        # Build the query string manually: requests percent-encodes comma as
+        # %2C which FTS3 does not accept — state_in must use literal commas.
+        _states = "SUBMITTED,READY,ACTIVE,FINISHED,FAILED,FINISHEDDIRTY,CANCELED"
+        _scan_path = "/jobs?time_window={}&state_in={}".format(
+            scan_window_h, _states,
         )
+        jobs = fts_client.get(_scan_path)
 
         if not isinstance(jobs, list):
             logger.error(

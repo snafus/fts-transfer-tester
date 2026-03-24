@@ -353,11 +353,11 @@ class TestSubmitWith500Recovery:
             submit_with_500_recovery(
                 client, {}, _config(scan_window_s=600), RUN_ID, 0, 0
             )
-        _, get_kwargs = client.get_calls[0]
-        assert get_kwargs["params"]["time_window"] == 1
+        path, _ = client.get_calls[0]
+        assert "time_window=1" in path
 
     def test_500_scan_state_in_parameter(self, monkeypatch):
-        """state_in must list all non-CANCELED active and terminal states."""
+        """state_in must use literal commas (not %2C) and include CANCELED."""
         import fts_framework.fts.submission as sub_mod
         monkeypatch.setattr(sub_mod.time, "sleep", lambda s: None)
         client = _FakeClient(
@@ -366,10 +366,13 @@ class TestSubmitWith500Recovery:
         )
         with pytest.raises(SubmissionError):
             submit_with_500_recovery(client, {}, _config(), RUN_ID, 0, 0)
-        _, get_kwargs = client.get_calls[0]
-        state_in = get_kwargs["params"]["state_in"]
-        expected_states = {"SUBMITTED", "READY", "ACTIVE", "FINISHED", "FAILED", "FINISHEDDIRTY"}
-        assert set(state_in.split(",")) == expected_states
+        path, _ = client.get_calls[0]
+        assert "state_in=" in path
+        assert "%2C" not in path  # must not be URL-encoded
+        expected_states = {"SUBMITTED", "READY", "ACTIVE", "FINISHED",
+                           "FAILED", "FINISHEDDIRTY", "CANCELED"}
+        state_in_val = path.split("state_in=")[1].split("&")[0]
+        assert set(state_in_val.split(",")) == expected_states
 
     def test_500_scan_filters_by_run_id(self, monkeypatch):
         """Jobs from a different run_id must not match."""
