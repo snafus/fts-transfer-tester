@@ -491,8 +491,28 @@ class TestRenderCsv:
         header = result.split("\n")[0]
         for col in ("file_id", "job_id", "file_state", "source_surl",
                     "dest_surl", "filesize", "throughput", "wall_duration_s",
-                    "start_time", "finish_time", "checksum", "reason"):
+                    "start_time", "start_time_ts", "finish_time", "finish_time_ts",
+                    "checksum", "reason"):
             assert col in header
+
+    def test_timestamp_columns_populated(self):
+        rec = self._rec(start_time="2024-01-01T00:00:00Z",
+                        finish_time="2024-01-01T00:00:02Z")
+        result = render_csv([rec])
+        import csv as _csv, io as _io
+        reader = _csv.DictReader(_io.StringIO(result))
+        row = next(reader)
+        assert row["start_time_ts"] == "1704067200"
+        assert row["finish_time_ts"] == "1704067202"
+
+    def test_timestamp_columns_empty_when_time_absent(self):
+        rec = {"file_id": 1, "file_state": "FAILED"}
+        result = render_csv([rec])
+        import csv as _csv, io as _io
+        reader = _csv.DictReader(_io.StringIO(result))
+        row = next(reader)
+        assert row["start_time_ts"] == ""
+        assert row["finish_time_ts"] == ""
 
     def test_one_row_per_record(self):
         records = [self._rec(file_id=i) for i in range(5)]
@@ -701,8 +721,19 @@ class TestRenderTimeseriesCsv:
         lines = result.strip().splitlines()
         assert len(lines) == 1
         assert "bucket_start" in lines[0]
+        assert "bucket_start_ts" in lines[0]
         assert "bucket_end" in lines[0]
+        assert "bucket_end_ts" in lines[0]
         assert "active_transfers" in lines[0]
+
+    def test_timestamp_columns_populated(self):
+        b = self._bucket(start="2026-01-01T00:00:00Z", end="2026-01-01T00:01:00Z")
+        result = render_timeseries_csv([b])
+        import csv as _csv, io as _io
+        reader = _csv.DictReader(_io.StringIO(result))
+        row = next(reader)
+        assert row["bucket_start_ts"] == "1767225600"
+        assert row["bucket_end_ts"] == "1767225660"
 
     def test_single_bucket_row(self):
         b = self._bucket(throughput_bytes_s=2000000.0)

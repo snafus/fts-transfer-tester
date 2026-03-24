@@ -24,11 +24,13 @@ Usage::
     render_all(snapshot, config, subjobs=subjobs)
 """
 
+import calendar
 import csv
 import io
 import json
 import logging
 import sys
+from datetime import datetime
 
 from fts_framework.persistence import store
 
@@ -422,6 +424,38 @@ def render_html(snapshot, config, subjobs=None):
 
 
 # ---------------------------------------------------------------------------
+# Timestamp helpers
+# ---------------------------------------------------------------------------
+
+_ISO_FORMATS = [
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%dT%H:%M:%SZ",
+    "%Y-%m-%dT%H:%M:%S.%f",
+    "%Y-%m-%dT%H:%M:%S.%fZ",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M:%S.%f",
+]
+
+
+def _iso_to_epoch(ts):
+    # type: (object) -> object
+    """Convert an ISO 8601 timestamp string to a Unix epoch integer.
+
+    Returns an integer (seconds since 1970-01-01 UTC) or empty string
+    if the input is absent or cannot be parsed.
+    """
+    if not ts:
+        return ""
+    for fmt in _ISO_FORMATS:
+        try:
+            dt = datetime.strptime(str(ts), fmt)
+            return calendar.timegm(dt.timetuple())
+        except ValueError:
+            continue
+    return ""
+
+
+# ---------------------------------------------------------------------------
 # Per-file CSV
 # ---------------------------------------------------------------------------
 
@@ -439,7 +473,9 @@ _CSV_COLUMNS = [
     ("wall_duration_s",  "wall_duration_s"),
     ("tx_duration",      "tx_duration"),
     ("start_time",       "start_time"),
+    ("start_time_ts",    None),   # derived: Unix epoch of start_time
     ("finish_time",      "finish_time"),
+    ("finish_time_ts",   None),   # derived: Unix epoch of finish_time
     ("checksum",         "checksum"),
     ("reason",           "reason"),
 ]
@@ -451,7 +487,8 @@ def render_csv(file_records):
 
     Columns: file_id, job_id, file_state, source_surl, dest_surl, filesize,
     throughput, throughput_wire, throughput_wall, wall_duration_s,
-    tx_duration, start_time, finish_time, checksum, reason.
+    tx_duration, start_time, start_time_ts, finish_time, finish_time_ts,
+    checksum, reason.
 
     Args:
         file_records (list[dict]): Normalised ``FileRecord`` dicts, updated
@@ -462,20 +499,29 @@ def render_csv(file_records):
         str: CSV content including header row.
     """
     buf = io.StringIO()
-    headers = [col for col, _ in _CSV_COLUMNS]
     writer = csv.writer(buf, lineterminator="\n")
-    writer.writerow(headers)
+    writer.writerow([col for col, _ in _CSV_COLUMNS])
     for f in file_records:
-        writer.writerow([f.get(key, "") for _, key in _CSV_COLUMNS])
+        row = []
+        for col, key in _CSV_COLUMNS:
+            if col == "start_time_ts":
+                row.append(_iso_to_epoch(f.get("start_time")))
+            elif col == "finish_time_ts":
+                row.append(_iso_to_epoch(f.get("finish_time")))
+            else:
+                row.append(f.get(key, ""))
+        writer.writerow(row)
     return buf.getvalue()
 
 
 _TIMESERIES_COLUMNS = [
-    ("bucket_start",                  "bucket_start"),
-    ("bucket_end",                    "bucket_end"),
-    ("active_transfers",              "active_transfers"),
-    ("aggregate_throughput_bytes_s",  "aggregate_throughput_bytes_s"),
-    ("aggregate_throughput_mb_s",     None),   # derived
+    "bucket_start",
+    "bucket_start_ts",
+    "bucket_end",
+    "bucket_end_ts",
+    "active_transfers",
+    "aggregate_throughput_bytes_s",
+    "aggregate_throughput_mb_s",
 ]
 
 
@@ -483,7 +529,8 @@ def render_timeseries_csv(timeseries):
     # type: (list) -> str
     """Return a CSV string with one row per timeseries bucket.
 
-    Columns: ``bucket_start``, ``bucket_end``, ``active_transfers``,
+    Columns: ``bucket_start``, ``bucket_start_ts``, ``bucket_end``,
+    ``bucket_end_ts``, ``active_transfers``,
     ``aggregate_throughput_bytes_s``, ``aggregate_throughput_mb_s``.
 
     Args:
@@ -495,12 +542,14 @@ def render_timeseries_csv(timeseries):
     """
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\n")
-    writer.writerow([col for col, _ in _TIMESERIES_COLUMNS])
+    writer.writerow(_TIMESERIES_COLUMNS)
     for b in timeseries:
         tp_bytes = b.get("aggregate_throughput_bytes_s", 0.0)
         writer.writerow([
             b.get("bucket_start", ""),
+            _iso_to_epoch(b.get("bucket_start")),
             b.get("bucket_end", ""),
+            _iso_to_epoch(b.get("bucket_end")),
             b.get("active_transfers", 0),
             tp_bytes,
             round(tp_bytes / 1e6, 4) if tp_bytes else 0.0,
