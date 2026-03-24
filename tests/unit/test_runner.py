@@ -448,19 +448,11 @@ def _install_run_campaign_mocks(monkeypatch, tmp_path,
         )
         monkeypatch.setattr(
             "fts_framework.persistence.store.write_manifest",
-            lambda run_id, mapping, config, runs_dir="runs": None,
+            lambda run_id, mapping, config, fts_monitor_base="", runs_dir="runs": None,
         )
         monkeypatch.setattr(
             "fts_framework.persistence.store.load_manifest",
             lambda run_id, runs_dir="runs": {"destination_mapping": {"https://src/f1": "https://dst/f1"}},
-        )
-        monkeypatch.setattr(
-            "fts_framework.persistence.store._atomic_write_json",
-            lambda path, data: None,
-        )
-        monkeypatch.setattr(
-            "fts_framework.persistence.store._manifest_path",
-            lambda run_id, runs_dir: str(tmp_path / "manifest.json"),
         )
 
     # _submit_chunks

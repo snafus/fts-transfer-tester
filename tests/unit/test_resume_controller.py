@@ -92,7 +92,7 @@ class _FakeClient:
             raise item
         return item
 
-    def post(self, path, **kwargs):
+    def post(self, path, payload=None, **kwargs):
         self.post_calls.append(path)
         if not self._responses:
             raise AssertionError("Unexpected post() for {}".format(path))

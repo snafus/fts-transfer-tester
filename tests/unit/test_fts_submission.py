@@ -14,7 +14,6 @@ from fts_framework.fts.submission import (
     build_payload,
     _build_job_metadata,
     submit_with_500_recovery,
-    submit_all,
 )
 from fts_framework.exceptions import SubmissionError
 
@@ -421,79 +420,3 @@ class TestSubmitWith500Recovery:
             submit_with_500_recovery(client, {}, _config(), RUN_ID, 0, 0)
 
 
-# ---------------------------------------------------------------------------
-# submit_all()
-# ---------------------------------------------------------------------------
-
-class TestSubmitAll:
-    def _make_mapping(self, n):
-        return OrderedDict(
-            ("https://src.example.org/f{:03d}.dat".format(i),
-             "https://dst.example.org/data/testfile_{:06d}".format(i))
-            for i in range(n)
-        )
-
-    def test_single_chunk_returns_one_subjob(self):
-        mapping = self._make_mapping(3)
-        client = _FakeClient(
-            post_responses=[_FakeResponse(200, {"job_id": "job-0"})]
-        )
-        subjobs = submit_all(mapping, {}, _config(chunk_size=200), RUN_ID, client)
-        assert len(subjobs) == 1
-        assert subjobs[0]["job_id"] == "job-0"
-        assert subjobs[0]["chunk_index"] == 0
-        assert subjobs[0]["retry_round"] == 0
-
-    def test_multiple_chunks(self):
-        mapping = self._make_mapping(5)
-        client = _FakeClient(
-            post_responses=[
-                _FakeResponse(200, {"job_id": "job-0"}),
-                _FakeResponse(200, {"job_id": "job-1"}),
-            ]
-        )
-        subjobs = submit_all(mapping, {}, _config(chunk_size=3), RUN_ID, client)
-        assert len(subjobs) == 2
-        assert subjobs[0]["job_id"] == "job-0"
-        assert subjobs[1]["job_id"] == "job-1"
-
-    def test_subjob_pfns_correct(self):
-        mapping = self._make_mapping(3)
-        client = _FakeClient(
-            post_responses=[_FakeResponse(200, {"job_id": "job-0"})]
-        )
-        subjobs = submit_all(mapping, {}, _config(chunk_size=200), RUN_ID, client)
-        expected_pfns = list(mapping.keys())
-        assert subjobs[0]["pfns"] == expected_pfns
-
-    def test_chunk_indices_sequential(self):
-        mapping = self._make_mapping(9)
-        client = _FakeClient(
-            post_responses=[
-                _FakeResponse(200, {"job_id": "job-{}".format(i)})
-                for i in range(3)
-            ]
-        )
-        subjobs = submit_all(mapping, {}, _config(chunk_size=3), RUN_ID, client)
-        assert [s["chunk_index"] for s in subjobs] == [0, 1, 2]
-
-    def test_submission_failure_propagates(self):
-        mapping = self._make_mapping(3)
-        client = _FakeClient(
-            post_responses=[_FakeResponse(403, "forbidden")]
-        )
-        with pytest.raises(SubmissionError):
-            submit_all(mapping, {}, _config(chunk_size=200), RUN_ID, client)
-
-    def test_checksums_passed_to_payload(self):
-        """Checksum values must appear in the submitted payload files list."""
-        src = "https://src.example.org/f000.dat"
-        dst = "https://dst.example.org/data/testfile_000000"
-        mapping = OrderedDict([(src, dst)])
-        checksums = {src: "adler32:deadbeef"}
-        client = _FakeClient(
-            post_responses=[_FakeResponse(200, {"job_id": "job-0"})]
-        )
-        submit_all(mapping, checksums, _config(), RUN_ID, client)
-        _, submitted_payload = client.post_calls[0]
-        assert submitted_payload["files"][0]["checksum"] == "adler32:deadbeef"

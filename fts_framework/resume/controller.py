@@ -200,7 +200,7 @@ def _recover_or_submit(fts_client, config, run_id, chunk_index, retry_round,
             "Cannot load payload {!r}: {}".format(payload_path, exc),
         )
 
-    resp = fts_client.post("/jobs", json=payload)
+    resp = fts_client.post("/jobs", payload)
 
     if resp.status_code == 200:
         job_id = resp.json().get("job_id", "")

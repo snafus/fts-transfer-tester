@@ -314,6 +314,9 @@ def _estimate_concurrency(finished_files, bucket_width_s=1):
     counted as active in bucket ``t`` if
     ``start_epoch <= t < finish_epoch``.
 
+    Uses a difference-array / prefix-sum approach: O(N + T) instead of
+    O(N x T), safe for large campaigns spanning many hours.
+
     Args:
         finished_files (list[dict]): FINISHED FileRecord dicts.
         bucket_width_s (int): Bucket width in seconds.  Default 1.
@@ -327,7 +330,7 @@ def _estimate_concurrency(finished_files, bucket_width_s=1):
         s = _parse_iso(f.get("start_time") or "")
         e = _parse_iso(f.get("finish_time") or "")
         if s is not None and e is not None:
-            timed.append((_epoch(s), _epoch(e)))
+            timed.append((int(_epoch(s)), int(_epoch(e))))
 
     if not timed:
         return []
@@ -335,12 +338,29 @@ def _estimate_concurrency(finished_files, bucket_width_s=1):
     t_min = min(s for s, _ in timed)
     t_max = max(e for _, e in timed)
 
+    # Build a difference array: +1 at start second, -1 at finish second.
+    # active_at(t) = prefix_sum(diff, 0 .. t - t_min).
+    span = t_max - t_min + 1
+    diff = [0] * (span + 1)  # +1 sentinel absorbs e == t_max
+    for s, e in timed:
+        s_i = s - t_min
+        e_i = e - t_min
+        diff[s_i] += 1
+        if e_i < len(diff):
+            diff[e_i] -= 1
+
+    # Compute prefix sums then sample every bucket_width_s seconds.
+    prefix = [0] * span
+    running = 0
+    for i in range(span):
+        running += diff[i]
+        prefix[i] = running
+
     buckets = []
-    t = t_min
-    while t <= t_max:
-        active = sum(1 for s, e in timed if s <= t < e)
-        buckets.append({"t": int(t), "active": active})
-        t += bucket_width_s
+    i = 0
+    while i < span:
+        buckets.append({"t": int(t_min + i), "active": prefix[i]})
+        i += bucket_width_s
 
     return buckets
 

@@ -112,6 +112,7 @@ def fts_request_with_retry(session, method, url,
     kwargs.setdefault("timeout", _REQUEST_TIMEOUT_S)
     backoff = initial_backoff
     last_exc = None  # type: req_lib.RequestException
+    max_retries = max(max_retries, 1)
 
     for attempt in range(max_retries):
         try:

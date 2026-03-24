@@ -295,13 +295,10 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
         )
         checksums = checksum_fetcher.fetch_all(list(mapping.keys()), source_session, config)
 
-        store.write_manifest(run_id, mapping, config, runs_dir=runs_dir)
-
-        # Stamp FTS monitor base URL into manifest
-        manifest = store.load_manifest(run_id, runs_dir=runs_dir)
-        manifest["fts_monitor_base"] = _fts_monitor_base(endpoint)
-        store._atomic_write_json(
-            store._manifest_path(run_id, runs_dir), manifest,
+        store.write_manifest(
+            run_id, mapping, config,
+            fts_monitor_base=_fts_monitor_base(endpoint),
+            runs_dir=runs_dir,
         )
 
         # -----------------------------------------------------------------------
@@ -405,6 +402,7 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
     # Step 10: Compute metrics
     # -----------------------------------------------------------------------
     snapshot = metrics_engine.compute(file_records, retry_records, config, run_id)
+    snapshot["ssl_verify_disabled"] = ssl_verify is False
 
     # -----------------------------------------------------------------------
     # Step 11: Generate reports

@@ -13,10 +13,6 @@ Responsibilities
 * ``submit_with_500_recovery()`` — submit one chunk and, on HTTP 500, scan
                          ``GET /jobs`` for an already-persisted job matching
                          ``(run_id, chunk_index, retry_round)``.
-* ``submit_all()``     — orchestrate chunking, payload build, and submission
-                         for all chunks; returns a list of ``SubjobRecord``
-                         dicts (one per chunk).
-
 500-recovery rationale
 ----------------------
 FTS3 may persist a job internally but return HTTP 500 with no ``job_id``.
@@ -28,8 +24,8 @@ attempt.
 
 Usage::
 
-    from fts_framework.fts.submission import submit_all
-    subjobs = submit_all(mapping, checksums, config, run_id, fts_client)
+    from fts_framework.fts.submission import submit_with_500_recovery
+    job_id = submit_with_500_recovery(fts_client, payload, config, run_id, 0, 0)
 """
 
 import logging
@@ -117,8 +113,8 @@ def build_payload(chunk_mapping, checksums, config, run_id, chunk_index, retry_r
             "destinations": [dst],
         }
         if checksum_algo == "adler32" and src in checksums:
-            # checksums[src] is "adler32:<hex>"; FTS3 expects "<hex>" for the
-            # checksum field and the algorithm is declared separately.
+            # checksums[src] is "adler32:<hex>"; FTS3 expects this
+            # "ALGO:VALUE" format in the checksum field.
             entry["checksum"] = checksums[src]
         files.append(entry)
 
@@ -309,65 +305,3 @@ def submit_with_500_recovery(fts_client, payload, config, run_id, chunk_index, r
     )
 
 
-def submit_all(mapping, checksums, config, run_id, fts_client):
-    # type: (OrderedDict, dict, dict, str, object) -> list
-    """Chunk *mapping* and submit all chunks to FTS3.
-
-    Iterates chunks in order.  On any submission failure the exception
-    propagates immediately; already-submitted chunks are not cancelled.
-
-    Args:
-        mapping (OrderedDict): Full source → destination mapping (all PFNs).
-        checksums (dict): PFN → ``"adler32:<hex>"``.
-        config (dict): Validated framework config dict.
-        run_id (str): Unique run identifier for this campaign.
-        fts_client: ``FTSClient`` instance.
-
-    Returns:
-        list[dict]: List of ``SubjobRecord`` dicts, one per chunk, each with:
-            - ``chunk_index`` (int)
-            - ``retry_round`` (int)  — always 0 for initial submission
-            - ``job_id`` (str)
-            - ``pfns`` (list[str])  — source PFNs in this chunk
-
-    Raises:
-        SubmissionError: If any chunk submission fails.
-        TokenExpiredError: Propagated from ``fts_client.post()``.
-        requests.RequestException: On unrecoverable connection failure.
-    """
-    chunk_size = config.get("transfer", {}).get("chunk_size", _MAX_CHUNK_SIZE)
-    chunks = chunk(mapping, size=chunk_size)
-
-    logger.info(
-        "Submitting %d chunks (chunk_size=%d) for run_id=%s",
-        len(chunks), chunk_size, run_id,
-    )
-
-    subjobs = []
-    for chunk_index, chunk_mapping in enumerate(chunks):
-        retry_round = 0
-        payload = build_payload(
-            chunk_mapping, checksums, config, run_id, chunk_index, retry_round
-        )
-        # NOTE: payload must be persisted to
-        # runs/<run_id>/submitted_payloads/chunk_{chunk_index:04d}_r{retry_round}.json
-        # before the POST (DESIGN.md §7 "raw data first" invariant).  The
-        # persistence call is wired in runner.py (Phase 8) once
-        # persistence.store is implemented.
-        job_id = submit_with_500_recovery(
-            fts_client, payload, config, run_id, chunk_index, retry_round
-        )
-        subjob = {
-            "chunk_index": chunk_index,
-            "retry_round": retry_round,
-            "job_id": job_id,
-            "pfns": list(chunk_mapping.keys()),
-        }
-        subjobs.append(subjob)
-        logger.info(
-            "Chunk %d/%d submitted: job_id=%s (%d files)",
-            chunk_index + 1, len(chunks), job_id, len(chunk_mapping),
-        )
-
-    logger.info("All %d chunks submitted for run_id=%s", len(subjobs), run_id)
-    return subjobs

@@ -98,8 +98,9 @@ def init_run_directory(run_id, config, runs_dir=_DEFAULT_RUNS_DIR):
 # Manifest
 # ---------------------------------------------------------------------------
 
-def write_manifest(run_id, dest_mapping, config, runs_dir=_DEFAULT_RUNS_DIR):
-    # type: (str, dict, dict, str) -> None
+def write_manifest(run_id, dest_mapping, config, fts_monitor_base="",
+                   runs_dir=_DEFAULT_RUNS_DIR):
+    # type: (str, dict, dict, str, str) -> None
     """Write the initial ``manifest.json`` for a new run.
 
     Called once before submission begins.  ``subjobs`` starts empty; call
@@ -110,6 +111,7 @@ def write_manifest(run_id, dest_mapping, config, runs_dir=_DEFAULT_RUNS_DIR):
         dest_mapping (dict): ``{src_pfn: dest_url}`` mapping from
             ``destination.planner``.
         config (dict): Validated framework config dict.
+        fts_monitor_base (str): FTS WebMonitor base URL (optional).
         runs_dir (str): Base directory for run outputs.
     """
     from datetime import datetime
@@ -119,7 +121,7 @@ def write_manifest(run_id, dest_mapping, config, runs_dir=_DEFAULT_RUNS_DIR):
         "created_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
         "config_hash": _config_hash(config),
         "fts_endpoint": config.get("fts", {}).get("endpoint", ""),
-        "fts_monitor_base": "",   # populated by runner if monitor URL is known
+        "fts_monitor_base": fts_monitor_base,
         "ssl_verify_disabled": config.get("fts", {}).get("ssl_verify", True) is False,
         "destination_mapping": dict(dest_mapping),
         "subjobs": [],
