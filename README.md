@@ -10,6 +10,7 @@ Production-grade, automation-first FTS3 transfer benchmarking framework written 
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [Inventory File Format](#inventory-file-format)
 - [Configuration Reference](#configuration-reference)
 - [CLI Usage](#cli-usage)
 - [Programmatic Usage](#programmatic-usage)
@@ -38,7 +39,7 @@ Production-grade, automation-first FTS3 transfer benchmarking framework written 
 - **Pre/post cleanup** — WebDAV HTTP DELETE against destination files, non-fatal
 - **ADLER32 checksums** — fetched via WebDAV `Want-Digest` HEAD requests before submission, verified by FTS3 end-to-end
 - **SSL verification control** — `true | false | /path/to/ca-bundle.pem`
-- **Console, JSON, Markdown, HTML reports**
+- **Console, JSON, Markdown, HTML, CSV, and timeseries CSV reports**
 - **Python 3.6.8 compatible** — no dataclasses, no walrus operator, no numpy
 
 ---
@@ -92,12 +93,16 @@ fts-run --help
 
 ## Quick Start
 
-**1. Create a PFN list** — one HTTPS source URL per line:
+**1. Create a PFN list** — one URL per line (HTTPS or `davs://`), optionally with a pre-computed ADLER32 checksum:
 
 ```
+# Plain URL list
 https://source.example.org/data/file_001.dat
-https://source.example.org/data/file_002.dat
-https://source.example.org/data/file_003.dat
+davs://source.example.org/data/file_002.dat
+
+# URL + checksum (skips Want-Digest HEAD request)
+https://source.example.org/data/file_001.dat,adler32:1a2b3c4d
+https://source.example.org/data/file_002.dat,1a2b3c4d
 ```
 
 **2. Copy and edit the example config:**
@@ -121,6 +126,28 @@ fts-run my_campaign.yaml
 ```
 
 The framework exits 0 if `success_rate >= min_success_threshold`, 1 otherwise.
+
+---
+
+## Inventory File Format
+
+The `source_pfns_file` supports two line formats, which may be mixed:
+
+**Plain URL** — ADLER32 fetched via `Want-Digest` HEAD before submission:
+```
+https://source.example.org/data/file_001.dat
+davs://source.example.org/data/file_002.dat
+```
+
+**URL with pre-computed checksum** — skips the Want-Digest fetch for that file:
+```
+https://source.example.org/data/file_001.dat,adler32:1a2b3c4d
+https://source.example.org/data/file_002.dat,1a2b3c4d
+```
+
+Both `adler32:<8-hex>` and bare 8-character hex strings are accepted. `davs://` URLs are rewritten to `https://` before any direct HTTP call.
+
+When `verify_checksum` is `none` or `target`, the pre-submission checksum fetch is skipped for all files regardless of the inventory format, and no checksum is included in the FTS3 job payload.
 
 ---
 
@@ -154,15 +181,29 @@ Three token roles are required. They may share the same value in single-IAM depl
 
 Tokens are never written to disk. The config copy in `runs/<run_id>/config.yaml` has all token values replaced with `<REDACTED>`.
 
+#### Token resolution order (highest priority wins)
+
+Tokens can be supplied from multiple sources. When the same role is supplied by more than one source the highest-priority source wins:
+
+| Priority | Source |
+|---|---|
+| 1 (highest) | `--fts-submit-token` / `--source-read-token` / `--dest-write-token` CLI flags |
+| 2 | `--token` CLI flag (applies the same value to all three roles) |
+| 3 | `FTS_SUBMIT_TOKEN` / `SOURCE_READ_TOKEN` / `DEST_WRITE_TOKEN` environment variables |
+| 4 | `FTS_TOKEN` environment variable (applies to all three roles) |
+| 5 (lowest) | `tokens` section in the YAML config |
+
+The `tokens` YAML section may be omitted entirely if all three roles are satisfied through environment variables or CLI flags.
+
 ### `transfer`
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `source_pfns_file` | string | required | Path to newline-separated HTTPS source PFN list |
-| `dst_prefix` | string | required | Destination HTTPS/WebDAV base URL |
+| `source_pfns_file` | string | required | Path to source PFN list (see [Inventory file format](#inventory-file-format)) |
+| `dst_prefix` | string | required | Destination base URL (`https://` or `davs://`) |
 | `preserve_extension` | bool | `false` | If true, append original file extension to destination filename |
 | `checksum_algorithm` | string | `"adler32"` | Only ADLER32 is supported |
-| `verify_checksum` | string | `"both"` | FTS3 checksum mode: `both`, `source`, `target`, `none` |
+| `verify_checksum` | string | `"both"` | FTS3 checksum mode: `both`, `source`, `target`, `none`. Modes `none` and `target` skip the pre-submission Want-Digest fetch. |
 | `overwrite` | bool | `false` | Allow FTS3 to overwrite existing destination files |
 | `chunk_size` | int | `200` | Files per FTS3 job. Maximum 200 (FTS3 limit). |
 | `priority` | int | `3` | FTS3 job priority 1 (lowest) to 5 (highest) |
@@ -212,17 +253,20 @@ Cleanup failures are logged as warnings and never abort the campaign. HTTP 404 o
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `base_dir` | string | `"runs"` | Base directory for all run outputs. Can be overridden by `--runs-dir` on the CLI. |
-| `reports.console` | bool | `true` | Print summary to stderr at campaign end |
+| `timeseries_bucket_s` | int | `60` | Bucket width in seconds for the timeseries throughput/concurrency CSV |
+| `reports.console` | bool | `true` | Print summary to stdout at campaign end |
 | `reports.json` | bool | `true` | Write `reports/summary.json` and `metrics/snapshot.json` |
-| `reports.markdown` | bool | `true` | Write `reports/summary.md` |
-| `reports.html` | bool | `false` | Write `reports/summary.html` |
+| `reports.markdown` | bool | `true` | Write `reports/report.md` |
+| `reports.html` | bool | `false` | Write `reports/report.html` |
+| `reports.csv` | bool | `true` | Write `reports/files.csv` (per-file metrics) |
+| `reports.timeseries_csv` | bool | `true` | Write `reports/timeseries.csv` (per-bucket throughput and concurrency) |
 
 ---
 
 ## CLI Usage
 
 ```
-fts-run <config> [--runs-dir DIR] [--log-level LEVEL]
+fts-run <config> [options]
 ```
 
 | Argument | Description |
@@ -230,11 +274,30 @@ fts-run <config> [--runs-dir DIR] [--log-level LEVEL]
 | `config` | Path to campaign YAML config file (required) |
 | `--runs-dir DIR` | Base directory for run outputs (default: `runs/`) |
 | `--log-level LEVEL` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` (default: `INFO`) |
+| `--token TOKEN` | Bearer token for all three roles (overrides `FTS_TOKEN` env var and YAML) |
+| `--fts-submit-token TOKEN` | Token for FTS3 job submission (overrides `FTS_SUBMIT_TOKEN` env var) |
+| `--source-read-token TOKEN` | Token for source storage reads (overrides `SOURCE_READ_TOKEN` env var) |
+| `--dest-write-token TOKEN` | Token for destination storage writes (overrides `DEST_WRITE_TOKEN` env var) |
+
+Token precedence: per-role CLI flags > `--token` > per-role env vars > `FTS_TOKEN` > YAML. See [Token resolution order](#token-resolution-order).
 
 ### Examples
 
 ```bash
 # Basic run
+fts-run campaign.yaml
+
+# Supply tokens via CLI (no tokens section needed in YAML)
+fts-run campaign.yaml --token "$BEARER_TOKEN"
+
+# Per-role tokens
+fts-run campaign.yaml \
+  --fts-submit-token "$FTS_TOKEN" \
+  --source-read-token "$SRC_TOKEN" \
+  --dest-write-token "$DST_TOKEN"
+
+# Supply tokens via environment variables
+export FTS_TOKEN="$BEARER_TOKEN"
 fts-run campaign.yaml
 
 # Custom output directory and verbose logging
@@ -320,9 +383,11 @@ runs/
     ├── cleanup_pre.json           # cleanup audit (if cleanup.before: true)
     ├── cleanup_post.json          # cleanup audit (if cleanup.after: true)
     └── reports/
-        ├── summary.json
-        ├── summary.md
-        └── summary.html           # if html: true
+        ├── summary.json           # if reports.json: true
+        ├── report.md              # if reports.markdown: true
+        ├── report.html            # if reports.html: true
+        ├── files.csv              # if reports.csv: true
+        └── timeseries.csv         # if reports.timeseries_csv: true
 ```
 
 **Key invariant**: submitted payloads are written before the POST /jobs request. If the process crashes mid-campaign, every submitted job is recoverable from `manifest.json`.
@@ -339,7 +404,7 @@ Printed to stderr at campaign end. Includes counts, success rate, throughput per
 
 Complete `MetricsSnapshot` dict. All numeric fields are present; `null` where a value cannot be computed (e.g. throughput when no files finished).
 
-### Markdown (`reports/summary.md`)
+### Markdown (`reports/report.md`)
 
 Structured sections:
 1. Run metadata
@@ -351,9 +416,17 @@ Structured sections:
 7. Failure reasons
 8. Per-subjob table (job IDs and FTS monitor URLs)
 
-### HTML (`reports/summary.html`)
+### HTML (`reports/report.html`)
 
 Same content as Markdown, rendered as a self-contained HTML file.
+
+### Per-file CSV (`reports/files.csv`)
+
+One row per file record. Columns: `file_id`, `job_id`, `file_state`, `source_surl`, `dest_surl`, `filesize`, `throughput`, `throughput_wire`, `throughput_wall`, `wall_duration_s`, `tx_duration`, `start_time`, `finish_time`, `checksum`, `reason`.
+
+### Timeseries CSV (`reports/timeseries.csv`)
+
+Estimated aggregate throughput and concurrency in configurable time buckets (default 60 s). Each transfer is modelled with a constant rate of `filesize / wall_duration`; its contribution to each bucket is `rate × overlap_seconds`. Columns: `bucket_start`, `bucket_end`, `active_transfers`, `aggregate_throughput_bytes_s`, `aggregate_throughput_mb_s`.
 
 ---
 
@@ -510,7 +583,7 @@ Integration tests require a live FTS3 endpoint:
 FTS_INTEGRATION_ENDPOINT=https://fts.example.org:8446 pytest tests/integration/ -v
 ```
 
-**615 unit tests** cover all modules: config loader, inventory, destination planner, checksum fetcher, FTS client, submission (including 500-recovery), poller, collector, persistence, resume controller, metrics engine, cleanup manager, reporting renderer, and runner orchestration.
+**671 unit tests** cover all modules: config loader, inventory, destination planner, checksum fetcher, FTS client, submission (including 500-recovery), poller, collector, persistence, resume controller, metrics engine, cleanup manager, reporting renderer, and runner orchestration.
 
 ---
 
