@@ -1,0 +1,42 @@
+---
+# FTS3 Test Framework — Example Sequence Parameter File
+#
+# Runs the baseline config multiple times, sweeping one or more parameters.
+# Each unique combination of parameter values is a "case"; each case is
+# repeated `trials` times for statistical reliability.
+#
+# Total runs = (number of cases) × trials
+#   Cartesian example below: 3 file counts × 2 PFN files × 3 trials = 18 runs
+
+# Path to the baseline campaign config (all common settings live here).
+baseline_config: "config/my_campaign.yaml"
+
+sequence:
+  trials: 3                      # repeat each case this many times
+  label: "scale_test"            # optional; included in the sequence directory name
+
+  sweep:
+    mode: cartesian              # cartesian (default) | zip
+                                 # cartesian: full cross-product of all parameter lists
+                                 # zip:       pair elements positionally (lists must be equal length)
+    parameters:
+      # Parameter keys use dot-notation matching the baseline config structure.
+      # Values may be:
+      #   - an explicit list:  [100, 200, 500]
+      #   - a range shorthand: {range: [start, stop, step]}  (integers, inclusive stop)
+      #   - a scalar:          100  (treated as a single-element list)
+
+      transfer.max_files: [100, 200, 500]
+
+      # Sweep over different input file sets (e.g. small vs. large files):
+      # transfer.source_pfns_file: ["small_files.txt", "large_files.txt"]
+
+      # Integer range example — generates [50, 100, 150, 200]:
+      # transfer.chunk_size: {range: [50, 200, 50]}
+
+  output:
+    base_dir: "sequences"        # sequence state and reports written under sequences/<id>/
+
+# Token resolution for all trials follows the same five-level priority as
+# fts-run: --fts-submit-token CLI > --token CLI > per-role env vars >
+# FTS_TOKEN env var > YAML tokens section in the baseline config.
