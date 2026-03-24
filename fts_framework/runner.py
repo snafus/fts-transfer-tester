@@ -96,7 +96,7 @@ def _log_optimizer_state(fts_client):
     """Fetch and log the FTS3 link optimizer state.  Non-fatal on error."""
     try:
         optimizer = fts_client.get("/optimizer/current")
-        logger.info("FTS3 optimizer state at campaign start: %s", optimizer)
+        logger.debug("FTS3 optimizer state at campaign start: %s", optimizer)
     except TokenExpiredError:
         raise
     except Exception as exc:
@@ -258,7 +258,7 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
     # -----------------------------------------------------------------------
     try:
         whoami = fts_client.get("/whoami")
-        logger.info("Token identity validated: %s", whoami)
+        logger.debug("Token identity validated: %s", whoami)
     except TokenExpiredError:
         raise
     except Exception as exc:
