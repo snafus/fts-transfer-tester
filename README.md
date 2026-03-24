@@ -19,6 +19,7 @@ Production-grade, automation-first FTS3 transfer benchmarking framework written 
 - [Campaign Resumption](#campaign-resumption)
 - [Framework Retry](#framework-retry)
 - [Cleanup](#cleanup)
+- [Throughput Estimation Method](#throughput-estimation-method)
 - [Metrics Reference](#metrics-reference)
 - [Exit Codes](#exit-codes)
 - [Testing](#testing)
@@ -426,7 +427,61 @@ One row per file record. Columns: `file_id`, `job_id`, `file_state`, `source_sur
 
 ### Timeseries CSV (`reports/timeseries.csv`)
 
-Estimated aggregate throughput and concurrency in configurable time buckets (default 60 s). Each transfer is modelled with a constant rate of `filesize / wall_duration`; its contribution to each bucket is `rate × overlap_seconds`. Columns: `bucket_start`, `bucket_end`, `active_transfers`, `aggregate_throughput_bytes_s`, `aggregate_throughput_mb_s`.
+Per-bucket aggregate throughput and active-transfer concurrency. Columns: `bucket_start`, `bucket_start_ts`, `bucket_end`, `bucket_end_ts`, `active_transfers`, `aggregate_throughput_bytes_s`, `aggregate_throughput_mb_s`.
+
+See [Throughput estimation method](#throughput-estimation-method) for the full derivation.
+
+---
+
+## Throughput Estimation Method
+
+The framework cannot observe instantaneous wire throughput directly from the FTS3 REST API — only per-file start and finish timestamps and file sizes are available. Two complementary estimates are produced.
+
+### Constant-rate model
+
+Each finished transfer *i* is modelled as transferring its bytes at a constant rate throughout its active interval:
+
+```
+rate_i  =  filesize_i / (finish_i − start_i)          [bytes/s]
+```
+
+This is the assumption of **uniform data flow** over the observed wall-clock duration. It is an approximation: real transfers exhibit slow-start, rate variation, and queuing delays. The model is unbiased in expectation but will smooth over transient bursts and stalls within a single transfer.
+
+Files with zero filesize, zero or negative wall duration, or missing timestamps are excluded from all throughput estimates.
+
+### Aggregate throughput timeseries (`reports/timeseries.csv`)
+
+Time is divided into non-overlapping buckets of width *W* seconds (default 60, configurable via `output.timeseries_bucket_s`). The aggregate throughput for bucket *b* covering `[t_b, t_b + W)` is:
+
+```
+B_b  =  Σ_i  rate_i × overlap(i, b)          [bytes]
+
+             ⎧ min(finish_i, t_b + W) − max(start_i, t_b)   if > 0
+overlap(i,b) = ⎨
+             ⎩ 0                                              otherwise
+
+throughput_b  =  B_b / W          [bytes/s]
+```
+
+That is, each transfer contributes bytes to each bucket in proportion to how many seconds of its active interval fall within that bucket. Summing over all transfers and dividing by the bucket width gives the mean aggregate data rate for the bucket. The active-transfer count for bucket *b* is the number of transfers for which `overlap(i, b) > 0`.
+
+This estimator is **time-weighted**: a transfer that spans multiple buckets contributes to each in proportion to its overlap, so no bytes are counted twice and no bytes are lost at bucket boundaries.
+
+### Per-second timeline (`snapshot.json` → `concurrency_timeline`)
+
+The same constant-rate model is applied at 1-second resolution using a **difference-array / prefix-sum** algorithm (O(N + T), where N is the number of transfers and T is the campaign duration in seconds):
+
+For each transfer *i*, define:
+- `+rate_i` added to a running accumulator at second `floor(start_i)`
+- `−rate_i` removed at second `floor(finish_i)`
+
+A single linear scan over the timeline produces the aggregate throughput at each second. This is algebraically equivalent to the overlap integral above with *W* = 1 s, using integer-second boundaries. The same pass also accumulates `bytes_in_flight` (total filesize of all active transfers at each second) using ±filesize increments.
+
+### Limitations
+
+- The constant-rate assumption introduces error proportional to within-transfer rate variance. It is most accurate for large numbers of concurrent transfers, where the central-limit effect smooths individual deviations.
+- Wall duration includes any TCP slow-start, protocol handshake, and checksum verification time, not only wire transfer time. This causes `rate_i` to be an underestimate of peak wire throughput for short or small files.
+- The FTS3 agent also reports a per-file `throughput` value (in MiB/s, converted to bytes/s on ingest). This value is used for the per-file statistics (mean, stddev, percentiles) but **not** for the timeseries, which is derived entirely from timestamps and file sizes. The two estimates will generally agree in aggregate but may differ per-file.
 
 ---
 
