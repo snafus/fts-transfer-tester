@@ -290,8 +290,9 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
         pfns = inventory_loader.load(config["transfer"]["source_pfns_file"])
         mapping = dest_planner.plan(pfns, config)
 
-        if config.get("transfer", {}).get("verify_checksum") == "none":
-            logger.info("verify_checksum=none — skipping pre-submission checksum fetch")
+        if config.get("transfer", {}).get("verify_checksum") in ("none", "target"):
+            logger.info("verify_checksum=%s — skipping pre-submission checksum fetch",
+                        config.get("transfer", {}).get("verify_checksum"))
             checksums = {}
         else:
             source_session = fts_client_mod.build_session(

@@ -718,6 +718,19 @@ class TestRunCampaign:
         run_campaign(config, runs_dir=str(tmp_path))
         assert fetch_calls == []
 
+    def test_checksum_fetch_skipped_when_verify_checksum_target(self, tmp_path, monkeypatch):
+        _install_run_campaign_mocks(monkeypatch, tmp_path)
+        fetch_calls = []
+        monkeypatch.setattr(
+            "fts_framework.checksum.fetcher.fetch_all",
+            lambda pfns, session, config: fetch_calls.append(pfns) or {},
+        )
+        config = _base_config()
+        config["transfer"]["verify_checksum"] = "target"
+        from fts_framework.runner import run_campaign
+        run_campaign(config, runs_dir=str(tmp_path))
+        assert fetch_calls == []
+
     def test_checksum_fetch_called_when_verify_checksum_both(self, tmp_path, monkeypatch):
         _install_run_campaign_mocks(monkeypatch, tmp_path)
         fetch_calls = []
