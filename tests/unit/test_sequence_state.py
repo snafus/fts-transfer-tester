@@ -1,12 +1,10 @@
 """Unit tests for fts_framework.sequence.state."""
 
-import json
 import os
 import tempfile
 
 import pytest
 
-from fts_framework.sequence import state as seq_state
 from fts_framework.sequence.state import (
     COMPLETED,
     FAILED,
@@ -81,8 +79,8 @@ class TestCreateAndLoad:
 
     def test_load_roundtrip(self):
         with tempfile.TemporaryDirectory() as tmp:
-            original = create(tmp, "seq_rt", _seq_params(label="lbl"),
-                              _make_cases(2), trials=2)
+            create(tmp, "seq_rt", _seq_params(label="lbl"),
+                   _make_cases(2), trials=2)
             loaded = load(tmp)
         assert loaded["sequence_id"] == "seq_rt"
         assert loaded["sequence_label"] == "lbl"

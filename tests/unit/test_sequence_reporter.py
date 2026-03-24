@@ -8,7 +8,6 @@ import tempfile
 import pytest
 
 from fts_framework.sequence import reporter as seq_reporter
-from fts_framework.sequence import state as seq_state
 from fts_framework.sequence.state import COMPLETED, FAILED, PENDING
 
 

@@ -27,7 +27,7 @@ from datetime import datetime
 
 from fts_framework.config import loader as config_loader
 from fts_framework.persistence import store
-from fts_framework.runner import run_campaign
+from fts_framework.runner import generate_run_id, run_campaign
 from fts_framework.sequence import loader as seq_loader
 from fts_framework.sequence import reporter as seq_reporter
 from fts_framework.sequence import state as seq_state
@@ -44,7 +44,7 @@ def _generate_sequence_id(label=None):
     timestamp  = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     short_uuid = uuid.uuid4().hex[:8]
     if label:
-        return "{}_{}_{}" .format(timestamp, short_uuid, label)
+        return "{}_{}_{}".format(timestamp, short_uuid, label)
     return "{}_{}".format(timestamp, short_uuid)
 
 
@@ -152,7 +152,6 @@ def run_sequence(params_file, resume_dir=None, runs_dir=None,
 
         # Generate run_id upfront so it can be recorded in state before the
         # campaign starts (enables crash detection on resume).
-        from fts_framework.runner import generate_run_id
         run_id = generate_run_id()
         trial_config["run"]["run_id"] = run_id
 

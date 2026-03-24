@@ -63,9 +63,13 @@ def _now_iso():
 
 def _write(sequence_dir, state):
     # type: (str, dict) -> None
+    # Write to a temp file then rename for atomicity: a process crash during
+    # the write must never leave state.json in a partial/corrupt state.
     path = os.path.join(sequence_dir, _STATE_FILENAME)
-    with open(path, "w") as fh:
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w") as fh:
         json.dump(state, fh, indent=2)
+    os.replace(tmp_path, path)
 
 
 def create(sequence_dir, sequence_id, seq_params, cases, trials,
