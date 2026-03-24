@@ -223,7 +223,7 @@ def _is_hex_adler32(value):
 
 
 def _base64_to_hex(value):
-    # type: (str) -> Optional[str]
+    # type: (str) -> object
     """Decode *value* as base64 and return the 8-character hex string, or None.
 
     RFC 3230 encodes a 4-byte ADLER32 as 6 base64 characters (with ``==``

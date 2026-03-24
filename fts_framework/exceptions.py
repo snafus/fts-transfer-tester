@@ -103,7 +103,7 @@ class TokenExpiredError(FTSFrameworkError):
     """
 
     def __init__(self, job_id=None):
-        # type: (Optional[str]) -> None
+        # type: (object) -> None
         self.job_id = job_id
         msg = "Bearer token expired"
         if job_id:

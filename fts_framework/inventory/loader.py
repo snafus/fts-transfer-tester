@@ -101,7 +101,7 @@ def _validate(pfns, path):
         )
 
     seen = set()           # type: set
-    duplicated = set()     # type: set  — distinct PFNs that appear more than once
+    duplicated = set()     # type: set
     for pfn in pfns:
         if pfn in seen:
             duplicated.add(pfn)
