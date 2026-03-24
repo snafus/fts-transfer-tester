@@ -206,6 +206,7 @@ The `tokens` YAML section may be omitted entirely if all three roles are satisfi
 | `checksum_algorithm` | string | `"adler32"` | Only ADLER32 is supported |
 | `verify_checksum` | string | `"both"` | FTS3 checksum mode: `both`, `source`, `target`, `none`. Modes `none` and `target` skip the pre-submission Want-Digest fetch. |
 | `overwrite` | bool | `false` | Allow FTS3 to overwrite existing destination files |
+| `max_files` | int \| null | `null` | Limit the number of source PFNs used. `null` uses all. Applied before destination planning and checksum fetch. |
 | `chunk_size` | int | `200` | Files per FTS3 job. Maximum 200 (FTS3 limit). |
 | `priority` | int | `3` | FTS3 job priority 1 (lowest) to 5 (highest) |
 | `activity` | string | `"default"` | FTS3 activity share label |
@@ -562,24 +563,34 @@ All metrics appear in `metrics/snapshot.json`.
 | `failure_rate` | `(failed + canceled) / eligible` | Fraction of eligible files that failed |
 | `threshold_passed` | `success_rate >= min_success_threshold` | Campaign PASS/FAIL |
 
-### Throughput
-
-Primary source is the FTS3 agent-reported `throughput` field. Falls back to `filesize / tx_duration` (wire throughput) when the primary is zero or absent.
+### Campaign time
 
 | Field | Description |
 |---|---|
-| `throughput_mean` | Mean throughput across finished files (bytes/s) |
+| `campaign_start` | ISO 8601 timestamp of the earliest file `start_time` |
+| `campaign_end` | ISO 8601 timestamp of the latest file `finish_time` |
+| `campaign_wall_s` | `campaign_end − campaign_start` in seconds; `null` if no valid timestamps |
+
+### Throughput
+
+Primary source is the FTS3 agent-reported `throughput` field (MiB/s, converted to bytes/s on ingest). Falls back to `filesize / tx_duration` (wire throughput) when the primary is zero or absent.
+
+| Field | Description |
+|---|---|
+| `throughput_mean` | Mean per-file throughput (bytes/s) |
+| `throughput_stddev` | Sample standard deviation of per-file throughput (bytes/s); `null` if fewer than 2 files |
 | `throughput_p50/p90/p95/p99` | Percentiles (bytes/s) |
-| `throughput_max` | Maximum throughput observed (bytes/s) |
-| `aggregate_throughput_bytes_per_s` | `total_bytes / campaign_wall_time` |
+| `throughput_max` | Maximum per-file throughput observed (bytes/s) |
+| `aggregate_throughput_bytes_per_s` | `total_finished_bytes / campaign_wall_s` |
 
 ### Duration
 
-Computed from `finish_time - start_time` (wall clock, not wire-only).
+Computed from `finish_time − start_time` (wall clock, includes protocol overhead and checksum verification).
 
 | Field | Description |
 |---|---|
 | `duration_mean_s` | Mean wall duration (seconds) |
+| `duration_stddev_s` | Sample standard deviation of wall duration (seconds); `null` if fewer than 2 files |
 | `duration_p50/p90/p95_s` | Percentiles (seconds) |
 
 ### Retries
@@ -593,13 +604,13 @@ Computed from `finish_time - start_time` (wall clock, not wire-only).
 
 ### Concurrency
 
-Estimated from file `start_time`/`finish_time` timestamps using 1-second buckets.
+Derived from file `start_time`/`finish_time` timestamps using a difference-array / prefix-sum at 1-second resolution. See [Throughput Estimation Method](#throughput-estimation-method) for the full derivation.
 
 | Field | Description |
 |---|---|
 | `peak_concurrency` | Maximum simultaneously active transfers |
 | `mean_concurrency` | Mean active transfers per second |
-| `concurrency_timeline` | `[{"t": epoch, "active": N}]` per-second timeline |
+| `concurrency_timeline` | Per-second timeline: `[{"t": epoch, "active": N, "bytes_in_flight": B, "throughput_bytes_s": R}]` |
 
 ### Failure reasons
 

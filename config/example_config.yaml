@@ -14,15 +14,23 @@ tokens:
   fts_submit: "eyJhbGciOiJSUzI1NiJ9..."
   source_read: "eyJhbGciOiJSUzI1NiJ9..."   # may be same value as fts_submit
   dest_write: "eyJhbGciOiJSUzI1NiJ9..."
+  # Tokens can also be supplied via environment variables or CLI flags;
+  # see Token resolution order in the README.
 
 transfer:
-  source_pfns_file: "sources.txt"       # one HTTPS PFN per line
-  dst_prefix: "https://storage.example.org/test-data"
+  # Path to source PFN list. One URL per line (https:// or davs://).
+  # Optionally include a pre-computed ADLER32 checksum separated by a comma:
+  #   https://source.example.org/data/file_001.dat,adler32:1a2b3c4d
+  # When checksums are pre-supplied, the Want-Digest HEAD fetch is skipped.
+  source_pfns_file: "sources.txt"
+  dst_prefix: "https://storage.example.org/test-data"  # https:// or davs://
   preserve_extension: false             # if true: testfile_000001.dat etc.
   checksum_algorithm: "adler32"         # adler32 only
   verify_checksum: "both"               # both | source | target | none
+                                        # none/target: skips pre-submission checksum fetch
   overwrite: false
-  chunk_size: 200                       # max 200 (FTS3 limit)
+  max_files: null                       # null = use all files; integer = use first N
+  chunk_size: 200                       # files per FTS3 job; max 200 (FTS3 limit)
   priority: 3                           # 1 (lowest) – 5 (highest)
   activity: "default"                   # FTS3 activity share label
   job_metadata: {}                      # user-supplied; merged with framework fields
@@ -50,8 +58,11 @@ retry:
 
 output:
   base_dir: "runs"
+  timeseries_bucket_s: 60               # bucket width in seconds for timeseries CSV
   reports:
     console: true
     json: true
     markdown: true
     html: false
+    csv: true                           # per-file metrics: reports/files.csv
+    timeseries_csv: true                # aggregate throughput timeseries: reports/timeseries.csv
