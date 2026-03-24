@@ -459,6 +459,30 @@ def main():
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Logging verbosity (default: INFO)",
     )
+    parser.add_argument(
+        "--token",
+        default=None,
+        metavar="TOKEN",
+        help="Bearer token for all roles (overrides FTS_TOKEN env var and YAML tokens section)",
+    )
+    parser.add_argument(
+        "--fts-submit-token",
+        default=None,
+        metavar="TOKEN",
+        help="Bearer token for FTS3 job submission (overrides FTS_SUBMIT_TOKEN env var)",
+    )
+    parser.add_argument(
+        "--source-read-token",
+        default=None,
+        metavar="TOKEN",
+        help="Bearer token for source storage reads (overrides SOURCE_READ_TOKEN env var)",
+    )
+    parser.add_argument(
+        "--dest-write-token",
+        default=None,
+        metavar="TOKEN",
+        help="Bearer token for destination storage writes (overrides DEST_WRITE_TOKEN env var)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -467,7 +491,13 @@ def main():
         stream=sys.stderr,
     )
 
-    config = config_loader.load(args.config)
+    config = config_loader.load(
+        args.config,
+        token=args.token,
+        fts_submit_token=args.fts_submit_token,
+        source_read_token=args.source_read_token,
+        dest_write_token=args.dest_write_token,
+    )
 
     try:
         snapshot = run_campaign(config, runs_dir=args.runs_dir)

@@ -572,3 +572,135 @@ class TestFileErrors:
             fh.write("- item1\n- item2\n")
         with pytest.raises(ConfigError, match="YAML mapping"):
             load(path)
+
+
+# ---------------------------------------------------------------------------
+# Token resolution
+# ---------------------------------------------------------------------------
+
+def _base_no_tokens(tmp_path):
+    """Return (path_str, data_dict) for a minimal valid config with no tokens section."""
+    data = {
+        "run": {"test_label": "test_campaign"},
+        "fts": {"endpoint": "https://fts.example.org:8446", "ssl_verify": True},
+        "transfer": {
+            "source_pfns_file": "sources.txt",
+            "dst_prefix": "https://storage.example.org/data",
+        },
+        "output": {"base_dir": "runs"},
+    }
+    path = str(tmp_path / "config_no_tokens.yaml")
+    write_yaml(data, path)
+    return path, data
+
+
+class TestTokenResolution:
+    def test_yaml_tokens_used_when_no_overrides(self, tmp_path):
+        path, _ = _base(tmp_path)
+        config = load(path)
+        assert config["tokens"]["fts_submit"] == "tok_submit"
+        assert config["tokens"]["source_read"] == "tok_read"
+        assert config["tokens"]["dest_write"] == "tok_write"
+
+    def test_shared_env_var_fills_all_roles(self, tmp_path, monkeypatch):
+        path, _ = _base_no_tokens(tmp_path)
+        monkeypatch.setenv("FTS_TOKEN", "shared_from_env")
+        config = load(path)
+        assert config["tokens"]["fts_submit"] == "shared_from_env"
+        assert config["tokens"]["source_read"] == "shared_from_env"
+        assert config["tokens"]["dest_write"] == "shared_from_env"
+
+    def test_per_role_env_var_overrides_shared_env_var(self, tmp_path, monkeypatch):
+        path, _ = _base_no_tokens(tmp_path)
+        monkeypatch.setenv("FTS_TOKEN", "shared")
+        monkeypatch.setenv("FTS_SUBMIT_TOKEN", "submit_specific")
+        config = load(path)
+        assert config["tokens"]["fts_submit"] == "submit_specific"
+        assert config["tokens"]["source_read"] == "shared"
+        assert config["tokens"]["dest_write"] == "shared"
+
+    def test_all_per_role_env_vars(self, tmp_path, monkeypatch):
+        path, _ = _base_no_tokens(tmp_path)
+        monkeypatch.setenv("FTS_SUBMIT_TOKEN", "env_submit")
+        monkeypatch.setenv("SOURCE_READ_TOKEN", "env_read")
+        monkeypatch.setenv("DEST_WRITE_TOKEN", "env_write")
+        config = load(path)
+        assert config["tokens"]["fts_submit"] == "env_submit"
+        assert config["tokens"]["source_read"] == "env_read"
+        assert config["tokens"]["dest_write"] == "env_write"
+
+    def test_shared_cli_token_overrides_env_var(self, tmp_path, monkeypatch):
+        path, _ = _base_no_tokens(tmp_path)
+        monkeypatch.setenv("FTS_TOKEN", "env_shared")
+        config = load(path, token="cli_shared")
+        assert config["tokens"]["fts_submit"] == "cli_shared"
+        assert config["tokens"]["source_read"] == "cli_shared"
+        assert config["tokens"]["dest_write"] == "cli_shared"
+
+    def test_per_role_cli_overrides_shared_cli(self, tmp_path, monkeypatch):
+        path, _ = _base_no_tokens(tmp_path)
+        monkeypatch.setenv("FTS_TOKEN", "env_shared")
+        config = load(path, token="cli_shared", fts_submit_token="cli_submit_only")
+        assert config["tokens"]["fts_submit"] == "cli_submit_only"
+        assert config["tokens"]["source_read"] == "cli_shared"
+        assert config["tokens"]["dest_write"] == "cli_shared"
+
+    def test_per_role_cli_overrides_yaml(self, tmp_path):
+        path, _ = _base(tmp_path)
+        config = load(path, fts_submit_token="new_submit")
+        assert config["tokens"]["fts_submit"] == "new_submit"
+        assert config["tokens"]["source_read"] == "tok_read"
+        assert config["tokens"]["dest_write"] == "tok_write"
+
+    def test_yaml_tokens_absent_with_cli_token_succeeds(self, tmp_path):
+        path, _ = _base_no_tokens(tmp_path)
+        config = load(path, token="all_in_one")
+        assert config["tokens"]["fts_submit"] == "all_in_one"
+        assert config["tokens"]["source_read"] == "all_in_one"
+        assert config["tokens"]["dest_write"] == "all_in_one"
+
+    def test_yaml_tokens_absent_with_all_per_role_cli_succeeds(self, tmp_path):
+        path, _ = _base_no_tokens(tmp_path)
+        config = load(
+            path,
+            fts_submit_token="s1",
+            source_read_token="s2",
+            dest_write_token="s3",
+        )
+        assert config["tokens"]["fts_submit"] == "s1"
+        assert config["tokens"]["source_read"] == "s2"
+        assert config["tokens"]["dest_write"] == "s3"
+
+    def test_yaml_tokens_absent_with_no_override_raises(self, tmp_path):
+        path, _ = _base_no_tokens(tmp_path)
+        with pytest.raises(ConfigError, match="'tokens'"):
+            load(path)
+
+    def test_empty_env_var_ignored(self, tmp_path, monkeypatch):
+        path, _ = _base(tmp_path)
+        monkeypatch.setenv("FTS_TOKEN", "")
+        monkeypatch.setenv("FTS_SUBMIT_TOKEN", "")
+        config = load(path)
+        assert config["tokens"]["fts_submit"] == "tok_submit"
+
+    def test_env_var_overrides_yaml_token(self, tmp_path, monkeypatch):
+        path, _ = _base(tmp_path)
+        monkeypatch.setenv("FTS_SUBMIT_TOKEN", "env_wins")
+        config = load(path)
+        assert config["tokens"]["fts_submit"] == "env_wins"
+        assert config["tokens"]["source_read"] == "tok_read"
+
+    def test_full_priority_chain(self, tmp_path, monkeypatch):
+        """Demonstrate all priority levels: per-role CLI > per-role env > shared env > YAML.
+
+        fts_submit: per-role CLI wins
+        source_read: per-role env wins over shared env (no CLI supplied)
+        dest_write:  shared env wins over YAML (no per-role env or CLI supplied)
+        """
+        path, _ = _base(tmp_path)
+        monkeypatch.setenv("FTS_TOKEN", "env_shared")
+        monkeypatch.setenv("SOURCE_READ_TOKEN", "env_read")
+        config = load(path, fts_submit_token="cli_submit")
+        assert config["tokens"]["fts_submit"] == "cli_submit"
+        assert config["tokens"]["source_read"] == "env_read"
+        assert config["tokens"]["dest_write"] == "env_shared"

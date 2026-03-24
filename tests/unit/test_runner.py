@@ -763,7 +763,7 @@ class TestMain:
     def _install_main_mocks(self, monkeypatch, tmp_path, threshold_passed=True):
         monkeypatch.setattr(
             "fts_framework.config.loader.load",
-            lambda path: _base_config(),
+            lambda path, token=None, fts_submit_token=None, source_read_token=None, dest_write_token=None: _base_config(),
         )
         _install_run_campaign_mocks(
             monkeypatch, tmp_path,
@@ -789,7 +789,7 @@ class TestMain:
     def test_exits_one_on_campaign_exception(self, tmp_path, monkeypatch):
         monkeypatch.setattr(
             "fts_framework.config.loader.load",
-            lambda path: _base_config(),
+            lambda path, token=None, fts_submit_token=None, source_read_token=None, dest_write_token=None: _base_config(),
         )
         monkeypatch.setattr("sys.argv", ["fts-run", "/fake/config.yaml"])
         import fts_framework.runner as runner_mod

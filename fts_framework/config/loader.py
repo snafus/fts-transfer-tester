@@ -20,6 +20,20 @@ Token values from ``config["tokens"]`` must never be logged, written to disk,
 or included in exception messages.  This module does not log token values.
 Callers must uphold the same contract.  Any log of the full ``config`` dict
 at any level would violate it.
+
+Token resolution order (highest wins)
+--------------------------------------
+1. Explicit per-role keyword arguments passed to ``load()`` — used by the
+   CLI for ``--fts-submit-token``, ``--source-read-token``, ``--dest-write-token``.
+2. Shared ``--token`` argument (also via ``load()`` keyword) — applies the
+   same value to all three roles.
+3. Per-role environment variables: ``FTS_SUBMIT_TOKEN``, ``SOURCE_READ_TOKEN``,
+   ``DEST_WRITE_TOKEN``.
+4. Shared environment variable ``FTS_TOKEN`` — applies to all three roles.
+5. Values in the YAML ``tokens`` section.
+
+The YAML ``tokens`` section may be omitted entirely if all three roles are
+supplied through environment variables or keyword arguments.
 """
 
 import logging
@@ -30,6 +44,14 @@ import yaml
 from fts_framework.exceptions import ConfigError
 
 logger = logging.getLogger(__name__)
+
+# Environment variable names for token resolution.
+_ENV_TOKEN_SHARED = "FTS_TOKEN"
+_ENV_TOKEN_ROLES = {
+    "fts_submit": "FTS_SUBMIT_TOKEN",
+    "source_read": "SOURCE_READ_TOKEN",
+    "dest_write": "DEST_WRITE_TOKEN",
+}
 
 # ---------------------------------------------------------------------------
 # Allowed constant values for enum-like fields
@@ -97,15 +119,33 @@ _DICT_SECTIONS = set(_DEFAULTS.keys()) | {"fts", "tokens"}
 # Public API
 # ---------------------------------------------------------------------------
 
-def load(path):
-    # type: (str) -> dict
+def load(path, token=None, fts_submit_token=None,
+         source_read_token=None, dest_write_token=None):
+    # type: (str, object, object, object, object) -> dict
     """Load, validate, and return the framework config from a YAML file.
 
     Applies defaults for all optional fields before validation, so the
     returned dict always contains every key defined in the schema.
 
+    Token values are resolved in this order (highest wins):
+
+    1. *fts_submit_token* / *source_read_token* / *dest_write_token* — explicit
+       per-role values (typically from CLI ``--fts-submit-token`` etc.).
+    2. *token* — a single shared value applied to all three roles.
+    3. ``FTS_SUBMIT_TOKEN`` / ``SOURCE_READ_TOKEN`` / ``DEST_WRITE_TOKEN``
+       environment variables (per-role).
+    4. ``FTS_TOKEN`` environment variable (shared).
+    5. Values in the YAML ``tokens`` section.
+
+    The ``tokens`` section may be absent from the YAML if all three roles
+    are satisfied through the above sources.
+
     Args:
         path (str): Absolute or relative path to the YAML config file.
+        token (str or None): Shared bearer token for all three roles.
+        fts_submit_token (str or None): Token for FTS3 job submission.
+        source_read_token (str or None): Token for source storage reads.
+        dest_write_token (str or None): Token for destination storage writes.
 
     Returns:
         dict: Fully populated and validated config dict.
@@ -118,6 +158,42 @@ def load(path):
 
     raw = _read_yaml(path)
     _check_section_types(raw)
+
+    # Build resolved token map: YAML < shared-env < per-role-env < shared-CLI < per-role-CLI
+    resolved = {}
+
+    # 4. Shared env var
+    shared_env = os.environ.get(_ENV_TOKEN_SHARED)
+    if shared_env:
+        resolved["fts_submit"] = shared_env
+        resolved["source_read"] = shared_env
+        resolved["dest_write"] = shared_env
+
+    # 3. Per-role env vars
+    for role, env_var in _ENV_TOKEN_ROLES.items():
+        val = os.environ.get(env_var)
+        if val:
+            resolved[role] = val
+
+    # 2. Shared CLI token
+    if token:
+        resolved["fts_submit"] = token
+        resolved["source_read"] = token
+        resolved["dest_write"] = token
+
+    # 1. Per-role CLI tokens
+    if fts_submit_token:
+        resolved["fts_submit"] = fts_submit_token
+    if source_read_token:
+        resolved["source_read"] = source_read_token
+    if dest_write_token:
+        resolved["dest_write"] = dest_write_token
+
+    if resolved:
+        tokens_section = dict(raw.get("tokens") or {})
+        tokens_section.update(resolved)
+        raw["tokens"] = tokens_section
+
     config = _apply_defaults(raw)
     _validate(config)
 
