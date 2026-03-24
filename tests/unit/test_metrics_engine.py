@@ -325,6 +325,8 @@ class TestEstimateConcurrency:
         for bucket in timeline:
             assert "t" in bucket
             assert "active" in bucket
+            assert "bytes_in_flight" in bucket
+            assert "throughput_bytes_s" in bucket
 
     def test_t_values_are_integers(self):
         f = _file(start_time="2026-01-01T00:00:00",
@@ -348,6 +350,86 @@ class TestEstimateConcurrency:
         timeline = _estimate_concurrency([f])
         # Only one bucket at t_min == t_max; active = 0 (s <= t < e fails when s==e)
         assert all(b["active"] == 0 for b in timeline)
+
+    # --- bytes_in_flight ---
+
+    def test_bytes_in_flight_single_file(self):
+        # 1000-byte file active for seconds [0, 5)
+        f = _file(filesize=1000,
+                  start_time="2026-01-01T00:00:00",
+                  finish_time="2026-01-01T00:00:05")
+        timeline = _estimate_concurrency([f])
+        # All seconds in [0,5) should have bytes_in_flight == 1000
+        active_buckets = [b for b in timeline if b["active"] > 0]
+        assert all(b["bytes_in_flight"] == 1000 for b in active_buckets)
+
+    def test_bytes_in_flight_two_overlapping_files(self):
+        # f1: 500 bytes, [0,10); f2: 300 bytes, [3,7)
+        # seconds [3,7): both active → bytes_in_flight == 800
+        f1 = _file(file_id=1, filesize=500,
+                   start_time="2026-01-01T00:00:00",
+                   finish_time="2026-01-01T00:00:10")
+        f2 = _file(file_id=2, filesize=300,
+                   start_time="2026-01-01T00:00:03",
+                   finish_time="2026-01-01T00:00:07")
+        timeline = _estimate_concurrency([f1, f2])
+        # Second at relative offset 3 (both active)
+        by_t = {b["t"]: b for b in timeline}
+        t_base = min(by_t)
+        assert by_t[t_base + 3]["bytes_in_flight"] == 800
+        # Second at relative offset 0 (only f1 active)
+        assert by_t[t_base]["bytes_in_flight"] == 500
+
+    def test_bytes_in_flight_zero_filesize_not_counted(self):
+        f = _file(filesize=0,
+                  start_time="2026-01-01T00:00:00",
+                  finish_time="2026-01-01T00:00:05")
+        timeline = _estimate_concurrency([f])
+        assert all(b["bytes_in_flight"] == 0 for b in timeline)
+
+    # --- throughput_bytes_s ---
+
+    def test_throughput_single_file_constant_rate(self):
+        # 100-byte file, 10 s wall → rate = 10 B/s
+        f = _file(filesize=100,
+                  start_time="2026-01-01T00:00:00",
+                  finish_time="2026-01-01T00:00:10")
+        timeline = _estimate_concurrency([f])
+        active_buckets = [b for b in timeline if b["active"] > 0]
+        for b in active_buckets:
+            assert b["throughput_bytes_s"] == pytest.approx(10.0)
+
+    def test_throughput_zero_for_inactive_seconds(self):
+        f = _file(filesize=100,
+                  start_time="2026-01-01T00:00:02",
+                  finish_time="2026-01-01T00:00:05")
+        timeline = _estimate_concurrency([f])
+        # No bucket should have throughput > 0 when active == 0
+        for b in timeline:
+            if b["active"] == 0:
+                assert b["throughput_bytes_s"] == pytest.approx(0.0)
+
+    def test_throughput_two_concurrent_files_additive(self):
+        # f1: 60 B / 10 s = 6 B/s; f2: 40 B / 10 s = 4 B/s
+        # Together: 10 B/s while both active
+        f1 = _file(file_id=1, filesize=60,
+                   start_time="2026-01-01T00:00:00",
+                   finish_time="2026-01-01T00:00:10")
+        f2 = _file(file_id=2, filesize=40,
+                   start_time="2026-01-01T00:00:00",
+                   finish_time="2026-01-01T00:00:10")
+        timeline = _estimate_concurrency([f1, f2])
+        active_buckets = [b for b in timeline if b["active"] == 2]
+        assert len(active_buckets) > 0
+        for b in active_buckets:
+            assert b["throughput_bytes_s"] == pytest.approx(10.0)
+
+    def test_throughput_zero_duration_file_excluded(self):
+        f = _file(filesize=1000,
+                  start_time="2026-01-01T00:00:05",
+                  finish_time="2026-01-01T00:00:05")
+        timeline = _estimate_concurrency([f])
+        assert all(b["throughput_bytes_s"] == pytest.approx(0.0) for b in timeline)
 
 
 # ---------------------------------------------------------------------------

@@ -315,58 +315,92 @@ def _aggregate_throughput(finished_files):
 
 def _estimate_concurrency(finished_files, bucket_width_s=1):
     # type: (list, int) -> list
-    """Estimate transfer concurrency as a timeline of active-transfer counts.
+    """Estimate per-second transfer concurrency, throughput, and bytes in-flight.
 
-    Each bucket represents a ``bucket_width_s``-second interval.  A file is
-    counted as active in bucket ``t`` if
-    ``start_epoch <= t < finish_epoch``.
+    Each bucket represents a ``bucket_width_s``-second interval.  Three
+    quantities are tracked using difference-array / prefix-sum (O(N + T)):
 
-    Uses a difference-array / prefix-sum approach: O(N + T) instead of
-    O(N x T), safe for large campaigns spanning many hours.
+    - ``active``: number of transfers with ``start_epoch <= t < finish_epoch``.
+    - ``bytes_in_flight``: sum of ``filesize`` for active transfers.
+    - ``throughput_bytes_s``: aggregate bytes/s using the constant-rate model
+      (each transfer contributes ``filesize / wall_duration`` uniformly across
+      the seconds it spans).
 
     Args:
         finished_files (list[dict]): FINISHED FileRecord dicts.
         bucket_width_s (int): Bucket width in seconds.  Default 1.
 
     Returns:
-        list[dict]: Timeline as ``[{"t": epoch_int, "active": int}]``.
+        list[dict]: Timeline as
+            ``[{"t": epoch_int, "active": int,
+                "bytes_in_flight": int, "throughput_bytes_s": float}]``.
             Empty if no files have valid timestamps.
     """
+    # Collect (start_epoch, finish_epoch, filesize, rate) per file.
+    # rate is None for files with zero wall duration (excluded from throughput).
     timed = []
     for f in finished_files:
         s = _parse_iso(f.get("start_time") or "")
         e = _parse_iso(f.get("finish_time") or "")
-        if s is not None and e is not None:
-            timed.append((int(_epoch(s)), int(_epoch(e))))
+        if s is None or e is None:
+            continue
+        s_i = int(_epoch(s))
+        e_i = int(_epoch(e))
+        filesize = int(f.get("filesize") or 0)
+        wall_s = e_i - s_i
+        rate = float(filesize) / wall_s if (wall_s > 0 and filesize > 0) else None
+        timed.append((s_i, e_i, filesize, rate))
 
     if not timed:
         return []
 
-    t_min = min(s for s, _ in timed)
-    t_max = max(e for _, e in timed)
+    t_min = min(s for s, _, _, _ in timed)
+    t_max = max(e for _, e, _, _ in timed)
 
-    # Build a difference array: +1 at start second, -1 at finish second.
-    # active_at(t) = prefix_sum(diff, 0 .. t - t_min).
     span = t_max - t_min + 1
-    diff = [0] * (span + 1)  # +1 sentinel absorbs e == t_max
-    for s, e in timed:
-        s_i = s - t_min
-        e_i = e - t_min
-        diff[s_i] += 1
-        if e_i < len(diff):
-            diff[e_i] -= 1
+    sentinel = span + 1
 
-    # Compute prefix sums then sample every bucket_width_s seconds.
-    prefix = [0] * span
-    running = 0
+    diff_active = [0] * sentinel
+    diff_bytes = [0] * sentinel
+    diff_rate = [0.0] * sentinel
+
+    for s_i, e_i, filesize, rate in timed:
+        lo = s_i - t_min
+        hi = e_i - t_min
+        diff_active[lo] += 1
+        if hi < sentinel:
+            diff_active[hi] -= 1
+        if filesize > 0:
+            diff_bytes[lo] += filesize
+            if hi < sentinel:
+                diff_bytes[hi] -= filesize
+        if rate is not None:
+            diff_rate[lo] += rate
+            if hi < sentinel:
+                diff_rate[hi] -= rate
+
+    # Prefix sums
+    active_arr = [0] * span
+    bytes_arr = [0] * span
+    rate_arr = [0.0] * span
+    a = b = r = 0
     for i in range(span):
-        running += diff[i]
-        prefix[i] = running
+        a += diff_active[i]
+        b += diff_bytes[i]
+        r += diff_rate[i]
+        active_arr[i] = a
+        bytes_arr[i] = b
+        rate_arr[i] = r
 
     buckets = []
     i = 0
     while i < span:
-        buckets.append({"t": int(t_min + i), "active": prefix[i]})
+        buckets.append({
+            "t": int(t_min + i),
+            "active": active_arr[i],
+            "bytes_in_flight": bytes_arr[i],
+            "throughput_bytes_s": round(rate_arr[i], 2),
+        })
         i += bucket_width_s
 
     return buckets
