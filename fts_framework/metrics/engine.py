@@ -39,7 +39,7 @@ Usage::
 import logging
 import statistics
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +163,10 @@ def compute(file_records, retry_records, config, run_id):
     # --- Step 7: failure categorisation ---
     failure_reasons = _categorise_failures(failed + canceled)
 
+    # --- Step 8: throughput/concurrency timeseries ---
+    bucket_width_s = config.get("output", {}).get("timeseries_bucket_s", 60)
+    timeseries = _compute_timeseries(finished, bucket_width_s)
+
     return {
         "run_id": run_id,
         "test_label": test_label,
@@ -212,6 +216,9 @@ def compute(file_records, retry_records, config, run_id):
 
         # Throughput timeline (placeholder — populated if needed by reporting)
         "throughput_timeline": [],
+
+        # Timeseries (per-bucket throughput and concurrency)
+        "timeseries": timeseries,
 
         # SSL warning — caller sets this if ssl_verify=False
         "ssl_verify_disabled": False,
@@ -362,6 +369,90 @@ def _estimate_concurrency(finished_files, bucket_width_s=1):
         buckets.append({"t": int(t_min + i), "active": prefix[i]})
         i += bucket_width_s
 
+    return buckets
+
+
+# ---------------------------------------------------------------------------
+# Throughput / concurrency timeseries
+# ---------------------------------------------------------------------------
+
+def _compute_timeseries(finished_files, bucket_width_s):
+    # type: (list, int) -> list
+    """Compute a per-bucket throughput and concurrency timeseries.
+
+    Each bucket covers ``bucket_width_s`` seconds.  For each finished file,
+    a constant transfer rate is assumed: ``rate = filesize / wall_duration``.
+    The file's contribution to each bucket it overlaps is
+    ``rate * overlap_seconds``.  Aggregate throughput for the bucket is the
+    total bytes attributed to it divided by ``bucket_width_s``.
+
+    Files with zero filesize, zero/negative wall duration, or unparseable
+    timestamps are excluded.
+
+    Args:
+        finished_files (list[dict]): FINISHED FileRecord dicts with computed
+            ``wall_duration_s`` (set by ``_compute_file_metrics``).
+        bucket_width_s (int): Bucket width in seconds.
+
+    Returns:
+        list[dict]: One dict per bucket with keys ``bucket_start`` (ISO8601),
+            ``bucket_end`` (ISO8601), ``active_transfers`` (int), and
+            ``aggregate_throughput_bytes_s`` (float).  Empty list if no
+            eligible files exist.
+    """
+    W = float(bucket_width_s)
+
+    # Build list of (start_epoch, end_epoch, rate_bytes_per_s)
+    timed = []
+    for f in finished_files:
+        s = _parse_iso(f.get("start_time") or "")
+        e = _parse_iso(f.get("finish_time") or "")
+        if s is None or e is None:
+            continue
+        wall_s = (e - s).total_seconds()
+        if wall_s <= 0:
+            continue
+        filesize = f.get("filesize") or 0
+        if filesize <= 0:
+            continue
+        timed.append((_epoch(s), _epoch(e), float(filesize) / wall_s))
+
+    if not timed:
+        return []
+
+    t_min = min(s for s, _, _ in timed)
+    t_max = max(e for _, e, _ in timed)
+
+    n_buckets = int((t_max - t_min) / W) + 1
+
+    agg_bytes = [0.0] * n_buckets
+    concurrency = [0] * n_buckets
+
+    for file_start, file_end, rate in timed:
+        b_first = int((file_start - t_min) / W)
+        b_last = min(int((file_end - t_min) / W), n_buckets - 1)
+        for b in range(b_first, b_last + 1):
+            bucket_t0 = t_min + b * W
+            bucket_t1 = bucket_t0 + W
+            overlap = min(file_end, bucket_t1) - max(file_start, bucket_t0)
+            if overlap > 0:
+                agg_bytes[b] += rate * overlap
+                concurrency[b] += 1
+
+    # Convert epoch bucket boundaries to ISO strings
+    epoch_base = datetime(1970, 1, 1)
+    buckets = []
+    for b in range(n_buckets):
+        bucket_t0 = t_min + b * W
+        bucket_t1 = bucket_t0 + W
+        dt0 = epoch_base + timedelta(seconds=bucket_t0)
+        dt1 = epoch_base + timedelta(seconds=bucket_t1)
+        buckets.append({
+            "bucket_start": dt0.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "bucket_end": dt1.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "active_transfers": concurrency[b],
+            "aggregate_throughput_bytes_s": agg_bytes[b] / W,
+        })
     return buckets
 
 

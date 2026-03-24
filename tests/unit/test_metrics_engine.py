@@ -11,6 +11,7 @@ from fts_framework.metrics.engine import (
     _compute_file_metrics,
     _aggregate_throughput,
     _estimate_concurrency,
+    _compute_timeseries,
     _retry_distribution,
     _categorise_failures,
     _percentile,
@@ -645,3 +646,117 @@ class TestCompute:
                   finish_time="2026-01-01T00:00:05")
         snap = compute([f], [], _config(), "r")
         assert snap["peak_concurrency"] == 0
+
+
+# ---------------------------------------------------------------------------
+# _compute_timeseries
+# ---------------------------------------------------------------------------
+
+class TestComputeTimeseries:
+    def _f(self, start, finish, filesize=1000000):
+        """Build a minimal finished-file dict for timeseries input."""
+        return {
+            "file_state": "FINISHED",
+            "filesize": filesize,
+            "start_time": start,
+            "finish_time": finish,
+        }
+
+    def test_empty_input_returns_empty(self):
+        assert _compute_timeseries([], 60) == []
+
+    def test_single_file_single_bucket(self):
+        # 100-byte file transferred in 10 s → rate = 10 B/s
+        # Fits entirely in one 60 s bucket → agg = 10*10/60 ≈ 1.667 B/s
+        f = self._f("2026-01-01T00:00:00", "2026-01-01T00:00:10", filesize=100)
+        buckets = _compute_timeseries([f], 60)
+        assert len(buckets) == 1
+        b = buckets[0]
+        assert b["active_transfers"] == 1
+        assert b["aggregate_throughput_bytes_s"] == pytest.approx(100.0 / 60.0)
+
+    def test_bucket_start_end_iso_format(self):
+        f = self._f("2026-01-01T00:00:00", "2026-01-01T00:00:10", filesize=60)
+        buckets = _compute_timeseries([f], 60)
+        assert len(buckets) == 1
+        assert "T" in buckets[0]["bucket_start"]
+        assert buckets[0]["bucket_start"].endswith("Z")
+        assert "T" in buckets[0]["bucket_end"]
+        assert buckets[0]["bucket_end"].endswith("Z")
+
+    def test_two_files_non_overlapping_two_buckets(self):
+        # File 1: 00:00:00 → 00:00:30 (30 s, 300 B → rate 10 B/s)
+        # File 2: 00:01:10 → 00:01:40 (30 s, 300 B → rate 10 B/s)
+        # Both fit in separate 60 s buckets; no overlap
+        f1 = self._f("2026-01-01T00:00:00", "2026-01-01T00:00:30", filesize=300)
+        f2 = self._f("2026-01-01T00:01:10", "2026-01-01T00:01:40", filesize=300)
+        buckets = _compute_timeseries([f1, f2], 60)
+        # There should be at least 2 buckets
+        assert len(buckets) >= 2
+        active_counts = [b["active_transfers"] for b in buckets]
+        assert max(active_counts) == 1  # never concurrent
+
+    def test_two_files_overlapping_same_bucket(self):
+        # Both files run simultaneously; concurrency should be 2
+        f1 = self._f("2026-01-01T00:00:00", "2026-01-01T00:00:30", filesize=300)
+        f2 = self._f("2026-01-01T00:00:00", "2026-01-01T00:00:30", filesize=300)
+        buckets = _compute_timeseries([f1, f2], 60)
+        assert len(buckets) == 1
+        assert buckets[0]["active_transfers"] == 2
+        # Each contributes 300/30 B/s * 30 s = 300 B; total 600 B / 60 s = 10 B/s
+        assert buckets[0]["aggregate_throughput_bytes_s"] == pytest.approx(10.0)
+
+    def test_file_spanning_two_buckets(self):
+        # Anchor t_min with an early file so that f2 straddles a bucket boundary.
+        # f1: 00:00:00 → 00:00:10 (t_min anchor, small)
+        # f2: 00:00:50 → 00:01:20 (straddles the 60 s boundary)
+        #   rate = 300 B / 30 s = 10 B/s
+        #   bucket 0 overlap: 60-50 = 10 s → 10*10/60 ≈ 1.667 B/s
+        #   bucket 1 overlap: 80-60 = 20 s → 10*20/60 ≈ 3.333 B/s
+        f1 = self._f("2026-01-01T00:00:00", "2026-01-01T00:00:10", filesize=10)
+        f2 = self._f("2026-01-01T00:00:50", "2026-01-01T00:01:20", filesize=300)
+        buckets = _compute_timeseries([f1, f2], 60)
+        assert len(buckets) >= 2
+        assert buckets[0]["active_transfers"] >= 1
+        assert buckets[1]["active_transfers"] == 1
+        assert buckets[1]["aggregate_throughput_bytes_s"] == pytest.approx(300.0 / 30 * 20 / 60.0)
+
+    def test_zero_filesize_excluded(self):
+        f = self._f("2026-01-01T00:00:00", "2026-01-01T00:00:10", filesize=0)
+        assert _compute_timeseries([f], 60) == []
+
+    def test_zero_duration_excluded(self):
+        f = self._f("2026-01-01T00:00:05", "2026-01-01T00:00:05", filesize=1000)
+        assert _compute_timeseries([f], 60) == []
+
+    def test_missing_start_time_excluded(self):
+        f = {"file_state": "FINISHED", "filesize": 1000,
+             "start_time": None, "finish_time": "2026-01-01T00:00:10"}
+        assert _compute_timeseries([f], 60) == []
+
+    def test_missing_finish_time_excluded(self):
+        f = {"file_state": "FINISHED", "filesize": 1000,
+             "start_time": "2026-01-01T00:00:00", "finish_time": None}
+        assert _compute_timeseries([f], 60) == []
+
+    def test_bucket_width_respected(self):
+        # 90-second file, 90 B → rate = 1 B/s
+        # With 30 s buckets: spans 3 full buckets (0-30, 30-60, 60-90), each gets 1 B/s
+        # n_buckets formula may add an empty trailing bucket; check at least 3 active ones
+        f = self._f("2026-01-01T00:00:00", "2026-01-01T00:01:30", filesize=90)
+        buckets = _compute_timeseries([f], 30)
+        assert len(buckets) >= 3
+        active = [b for b in buckets if b["active_transfers"] > 0]
+        assert len(active) == 3
+        for b in active:
+            assert b["aggregate_throughput_bytes_s"] == pytest.approx(1.0)
+
+    def test_compute_returns_timeseries_key(self):
+        cfg = _config()
+        cfg["output"] = {"timeseries_bucket_s": 60}
+        f = _file(file_state="FINISHED",
+                  start_time="2026-01-01T00:00:00",
+                  finish_time="2026-01-01T00:00:10")
+        snap = compute([f], [], cfg, "r")
+        assert "timeseries" in snap
+        assert isinstance(snap["timeseries"], list)

@@ -85,6 +85,11 @@ def render_all(snapshot, config, subjobs=None, file_records=None,
         csv_content = render_csv(file_records)
         store.write_report(run_id, "files.csv", csv_content, runs_dir=runs_dir)
 
+    if reports_cfg.get("timeseries_csv", True):
+        timeseries = snapshot.get("timeseries") or []
+        ts_content = render_timeseries_csv(timeseries)
+        store.write_report(run_id, "timeseries.csv", ts_content, runs_dir=runs_dir)
+
     logger.info("Reports written for run %s", run_id)
 
 
@@ -462,6 +467,44 @@ def render_csv(file_records):
     writer.writerow(headers)
     for f in file_records:
         writer.writerow([f.get(key, "") for _, key in _CSV_COLUMNS])
+    return buf.getvalue()
+
+
+_TIMESERIES_COLUMNS = [
+    ("bucket_start",                  "bucket_start"),
+    ("bucket_end",                    "bucket_end"),
+    ("active_transfers",              "active_transfers"),
+    ("aggregate_throughput_bytes_s",  "aggregate_throughput_bytes_s"),
+    ("aggregate_throughput_mb_s",     None),   # derived
+]
+
+
+def render_timeseries_csv(timeseries):
+    # type: (list) -> str
+    """Return a CSV string with one row per timeseries bucket.
+
+    Columns: ``bucket_start``, ``bucket_end``, ``active_transfers``,
+    ``aggregate_throughput_bytes_s``, ``aggregate_throughput_mb_s``.
+
+    Args:
+        timeseries (list[dict]): Bucket dicts from
+            ``metrics.engine._compute_timeseries``.
+
+    Returns:
+        str: CSV content including header row.
+    """
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow([col for col, _ in _TIMESERIES_COLUMNS])
+    for b in timeseries:
+        tp_bytes = b.get("aggregate_throughput_bytes_s", 0.0)
+        writer.writerow([
+            b.get("bucket_start", ""),
+            b.get("bucket_end", ""),
+            b.get("active_transfers", 0),
+            tp_bytes,
+            round(tp_bytes / 1e6, 4) if tp_bytes else 0.0,
+        ])
     return buf.getvalue()
 
 

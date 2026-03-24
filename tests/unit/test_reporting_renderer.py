@@ -15,6 +15,7 @@ from fts_framework.reporting.renderer import (
     render_csv,
     render_html,
     render_markdown,
+    render_timeseries_csv,
 )
 
 
@@ -69,6 +70,8 @@ def _base_config(**overrides):
             "json": True,
             "markdown": True,
             "html": False,
+            "csv": False,
+            "timeseries_csv": False,
         }},
         "run": {"test_label": "test_label_value"},
     }
@@ -588,7 +591,8 @@ class TestRenderAll:
     def test_console_not_written_when_disabled(self, capsys):
         snap = _base_snapshot()
         cfg = _base_config()
-        cfg["output"]["reports"] = {"console": False, "json": False, "markdown": False, "html": False}
+        cfg["output"]["reports"] = {"console": False, "json": False, "markdown": False,
+                                     "html": False, "csv": False, "timeseries_csv": False}
         renderer.render_all(snap, cfg, runs_dir="/nonexistent_should_not_reach")
         captured = capsys.readouterr()
         assert captured.out == ""
@@ -676,3 +680,86 @@ class TestRenderAll:
         assert os.path.isfile(os.path.join(runs_dir, run_id, "reports", "report.md"))
         # HTML not written (default False)
         assert not os.path.isfile(os.path.join(runs_dir, run_id, "reports", "report.html"))
+
+
+# ---------------------------------------------------------------------------
+# render_timeseries_csv
+# ---------------------------------------------------------------------------
+
+class TestRenderTimeseriesCsv:
+    def _bucket(self, start="2026-01-01T00:00:00Z", end="2026-01-01T00:01:00Z",
+                active=2, throughput_bytes_s=1000000.0):
+        return {
+            "bucket_start": start,
+            "bucket_end": end,
+            "active_transfers": active,
+            "aggregate_throughput_bytes_s": throughput_bytes_s,
+        }
+
+    def test_empty_timeseries_returns_header_only(self):
+        result = render_timeseries_csv([])
+        lines = result.strip().splitlines()
+        assert len(lines) == 1
+        assert "bucket_start" in lines[0]
+        assert "bucket_end" in lines[0]
+        assert "active_transfers" in lines[0]
+
+    def test_single_bucket_row(self):
+        b = self._bucket(throughput_bytes_s=2000000.0)
+        result = render_timeseries_csv([b])
+        lines = result.strip().splitlines()
+        assert len(lines) == 2  # header + 1 row
+        row = lines[1]
+        assert "2026-01-01T00:00:00Z" in row
+        assert "2026-01-01T00:01:00Z" in row
+        assert "2" in row  # active_transfers
+
+    def test_throughput_columns_present(self):
+        b = self._bucket(throughput_bytes_s=1000000.0)
+        result = render_timeseries_csv([b])
+        header = result.splitlines()[0]
+        assert "aggregate_throughput_bytes_s" in header
+        assert "aggregate_throughput_mb_s" in header
+
+    def test_mb_s_computed_correctly(self):
+        # 1 MB/s = 1,000,000 B/s
+        b = self._bucket(throughput_bytes_s=1000000.0)
+        result = render_timeseries_csv([b])
+        data_line = result.strip().splitlines()[1]
+        cols = data_line.split(",")
+        # Last column is MB/s
+        mb_s = float(cols[-1])
+        assert mb_s == pytest.approx(1.0, rel=1e-3)
+
+    def test_zero_throughput_row(self):
+        b = self._bucket(throughput_bytes_s=0.0)
+        result = render_timeseries_csv([b])
+        lines = result.strip().splitlines()
+        assert len(lines) == 2
+        data_line = lines[1]
+        assert "0" in data_line
+
+    def test_multiple_buckets(self):
+        buckets = [
+            self._bucket(start="2026-01-01T00:00:00Z", end="2026-01-01T00:01:00Z",
+                         active=1, throughput_bytes_s=500000.0),
+            self._bucket(start="2026-01-01T00:01:00Z", end="2026-01-01T00:02:00Z",
+                         active=3, throughput_bytes_s=1500000.0),
+        ]
+        result = render_timeseries_csv(buckets)
+        lines = result.strip().splitlines()
+        assert len(lines) == 3  # header + 2 rows
+
+    def test_output_is_valid_csv(self):
+        import csv
+        import io
+        buckets = [self._bucket(), self._bucket(
+            start="2026-01-01T00:01:00Z", end="2026-01-01T00:02:00Z",
+            active=5, throughput_bytes_s=9999999.0
+        )]
+        result = render_timeseries_csv(buckets)
+        reader = csv.DictReader(io.StringIO(result))
+        rows = list(reader)
+        assert len(rows) == 2
+        assert "bucket_start" in rows[0]
+        assert "active_transfers" in rows[0]

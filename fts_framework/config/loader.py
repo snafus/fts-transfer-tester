@@ -102,12 +102,14 @@ _DEFAULTS = {
     },
     "output": {
         "base_dir": "runs",
+        "timeseries_bucket_s": 60,
         "reports": {
             "console": True,
             "json": True,
             "markdown": True,
             "html": False,
             "csv": True,
+            "timeseries_csv": True,
         },
     },
 }
