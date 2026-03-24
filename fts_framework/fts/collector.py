@@ -183,7 +183,9 @@ def _normalise_file_record(item, job_id, chunk_index, retry_round):
         # Transfer metrics (agent-reported)
         "filesize": int(item.get("filesize") or 0),
         "tx_duration": float(item.get("tx_duration") or 0.0),
-        "throughput": float(item.get("throughput") or 0.0),
+        # FTS3 agent reports throughput in MiB/s; convert to bytes/s for
+        # consistent internal representation.
+        "throughput": float(item.get("throughput") or 0.0) * 1048576,
 
         # Computed metrics (populated by MetricsEngine, not here)
         "throughput_wire": 0.0,

@@ -140,7 +140,7 @@ def render_console(snapshot, config):
     ))
     _add("")
 
-    _add(" Throughput (agent-reported, bytes/sec)")
+    _add(" Throughput (agent-reported)")
     tp_mean = snapshot.get("throughput_mean")
     tp_p50 = snapshot.get("throughput_p50")
     tp_p90 = snapshot.get("throughput_p90")

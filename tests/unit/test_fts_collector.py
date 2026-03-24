@@ -116,11 +116,12 @@ class TestNormaliseFileRecord:
         assert isinstance(rec["filesize"], int)
         assert rec["filesize"] == 4096
 
-    def test_throughput_cast_to_float(self):
-        item = _fts_file(throughput=1234)
+    def test_throughput_converted_from_mib_s_to_bytes_s(self):
+        # FTS3 reports throughput in MiB/s; collector converts to bytes/s
+        item = _fts_file(throughput=1.0)
         rec = _normalise_file_record(item, "j", 0, 0)
         assert isinstance(rec["throughput"], float)
-        assert rec["throughput"] == 1234.0
+        assert rec["throughput"] == pytest.approx(1048576.0)
 
     def test_tx_duration_cast_to_float(self):
         item = _fts_file(tx_duration=5)
