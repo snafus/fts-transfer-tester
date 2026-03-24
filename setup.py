@@ -15,6 +15,7 @@ setup(
     entry_points={
         "console_scripts": [
             "fts-run=fts_framework.runner:main",
+            "fts-sequence=fts_framework.sequence.__main__:main",
         ],
     },
     classifiers=[
