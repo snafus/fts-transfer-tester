@@ -110,6 +110,17 @@ class TestDeleteOne:
         record = _delete_one(url, _session())
         assert record["url"] == url
 
+    @resp_lib.activate
+    def test_davs_url_converted_to_https_for_request(self):
+        davs_url = "davs://storage.example.org/data/testfile_000000"
+        https_url = "https://storage.example.org/data/testfile_000000"
+        resp_lib.add(resp_lib.DELETE, https_url, status=204)
+        record = _delete_one(davs_url, _session())
+        assert record["success"] is True
+        assert record["url"] == davs_url
+        assert len(resp_lib.calls) == 1
+        assert resp_lib.calls[0].request.url == https_url
+
 
 # ---------------------------------------------------------------------------
 # cleanup_pre

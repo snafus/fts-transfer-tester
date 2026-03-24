@@ -123,7 +123,7 @@ def _fetch_one(pfn, session):
     """
     try:
         response = session.head(
-            pfn,
+            pfn.replace("davs://", "https://", 1),
             headers={"Want-Digest": "adler32"},
             timeout=_HEAD_TIMEOUT_S,
         )

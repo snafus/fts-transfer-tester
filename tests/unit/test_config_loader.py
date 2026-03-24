@@ -390,6 +390,13 @@ class TestRequiredFields:
         with pytest.raises(ConfigError, match="dst_prefix"):
             load(path)
 
+    def test_dst_prefix_davs_accepted(self, tmp_path):
+        path, data = _base(tmp_path)
+        data["transfer"]["dst_prefix"] = "davs://xrootd01.example.org:1094/path/testarea"
+        write_yaml(data, path)
+        cfg = load(path)
+        assert cfg["transfer"]["dst_prefix"] == "davs://xrootd01.example.org:1094/path/testarea"
+
 
 # ---------------------------------------------------------------------------
 # Value constraint validation

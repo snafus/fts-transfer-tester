@@ -151,7 +151,8 @@ def _delete_one(url, session, label="cleanup"):
             ``error``.
     """
     try:
-        resp = session.delete(url, timeout=_DELETE_TIMEOUT_S)
+        http_url = url.replace("davs://", "https://", 1)
+        resp = session.delete(http_url, timeout=_DELETE_TIMEOUT_S)
         status_code = resp.status_code
         if status_code in _DELETE_OK_CODES:
             if status_code == 404:

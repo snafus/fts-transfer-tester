@@ -199,6 +199,15 @@ class TestFetchOne:
             with pytest.raises(ChecksumFetchError, match="HEAD request failed"):
                 _fetch_one(PFN, _make_session())
 
+    @resp_lib.activate
+    def test_davs_pfn_converted_to_https_for_request(self):
+        davs_pfn = "davs://storage.example.org/data/file001.dat"
+        https_url = "https://storage.example.org/data/file001.dat"
+        resp_lib.add(resp_lib.HEAD, https_url, headers={"Digest": "adler32={}".format(HEX_CHECKSUM)}, status=200)
+        result = _fetch_one(davs_pfn, _make_session())
+        assert result == "adler32:{}".format(HEX_CHECKSUM)
+        assert resp_lib.calls[0].request.url == https_url
+
 
 # ---------------------------------------------------------------------------
 # fetch_all (parallel, mocked HTTP)

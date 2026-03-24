@@ -424,9 +424,9 @@ def _validate_transfer(config):
     _require_str(config, "transfer", "source_pfns_file")
 
     dst_prefix = _require_str(config, "transfer", "dst_prefix")
-    if not dst_prefix.startswith("https://"):
+    if not (dst_prefix.startswith("https://") or dst_prefix.startswith("davs://")):
         raise ConfigError(
-            "transfer.dst_prefix must be an https:// URL, got: {!r}".format(dst_prefix)
+            "transfer.dst_prefix must be an https:// or davs:// URL, got: {!r}".format(dst_prefix)
         )
 
     _require_int(
