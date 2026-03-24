@@ -111,6 +111,10 @@ class TestDefaults:
         path, _ = _base(tmp_path)
         assert load(path)["run"]["run_id"] is None
 
+    def test_default_max_files_is_none(self, tmp_path):
+        path, _ = _base(tmp_path)
+        assert load(path)["transfer"]["max_files"] is None
+
     def test_default_chunk_size(self, tmp_path):
         path, _ = _base(tmp_path)
         assert load(path)["transfer"]["chunk_size"] == 200
@@ -443,6 +447,39 @@ class TestValueConstraints:
             data["transfer"]["priority"] = p
             write_yaml(data, path)
             assert load(path)["transfer"]["priority"] == p
+
+    def test_max_files_valid_positive_int(self, tmp_path):
+        path, data = _base(tmp_path)
+        data["transfer"]["max_files"] = 50
+        write_yaml(data, path)
+        assert load(path)["transfer"]["max_files"] == 50
+
+    def test_max_files_zero_raises(self, tmp_path):
+        path, data = _base(tmp_path)
+        data["transfer"]["max_files"] = 0
+        write_yaml(data, path)
+        with pytest.raises(ConfigError, match="max_files"):
+            load(path)
+
+    def test_max_files_negative_raises(self, tmp_path):
+        path, data = _base(tmp_path)
+        data["transfer"]["max_files"] = -1
+        write_yaml(data, path)
+        with pytest.raises(ConfigError, match="max_files"):
+            load(path)
+
+    def test_max_files_float_raises(self, tmp_path):
+        path, data = _base(tmp_path)
+        data["transfer"]["max_files"] = 10.0
+        write_yaml(data, path)
+        with pytest.raises(ConfigError, match="max_files"):
+            load(path)
+
+    def test_max_files_null_is_valid(self, tmp_path):
+        path, data = _base(tmp_path)
+        data["transfer"]["max_files"] = None
+        write_yaml(data, path)
+        assert load(path)["transfer"]["max_files"] is None
 
     def test_scan_window_below_60_raises(self, tmp_path):
         path, data = _base(tmp_path)

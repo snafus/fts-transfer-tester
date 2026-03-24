@@ -127,6 +127,9 @@ def render_console(snapshot, config):
     ))
     _add(_SEP)
 
+    max_files = snapshot.get("max_files")
+    if max_files is not None:
+        _add(" Max files (limit) : {}".format(max_files))
     _add(" Files total       : {}".format(snapshot.get("total_files", 0)))
     _add(" Finished          : {}".format(snapshot.get("finished", 0)))
     _add(" Failed            : {}".format(snapshot.get("failed", 0)))
@@ -229,6 +232,9 @@ def render_markdown(snapshot, config, subjobs=None):
     _add("| SSL verify | {} |".format(
         "DISABLED" if snapshot.get("ssl_verify_disabled") else "ENABLED"
     ))
+    max_files = snapshot.get("max_files")
+    if max_files is not None:
+        _add("| Max files (limit) | {} |".format(max_files))
     _add("")
 
     # 2. Transfer outcomes

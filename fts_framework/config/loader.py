@@ -74,6 +74,7 @@ _DEFAULTS = {
         "checksum_algorithm": "adler32",
         "verify_checksum": "both",
         "overwrite": False,
+        "max_files": None,
         "chunk_size": 200,
         "priority": 3,
         "activity": "default",
@@ -454,6 +455,10 @@ def _validate_transfer(config):
                 _ALLOWED_VERIFY_CHECKSUM, verify
             )
         )
+
+    max_files = config["transfer"]["max_files"]
+    if max_files is not None:
+        _require_int(max_files, "transfer.max_files", min_val=1)
 
 
 def _validate_concurrency(config):

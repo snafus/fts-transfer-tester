@@ -761,6 +761,63 @@ class TestRunCampaign:
         run_campaign(config, runs_dir=str(tmp_path))
         assert len(fetch_calls) == 1
 
+    def test_max_files_truncates_pfn_list(self, tmp_path, monkeypatch):
+        _install_run_campaign_mocks(monkeypatch, tmp_path)
+        planned = []
+        monkeypatch.setattr(
+            "fts_framework.inventory.loader.load",
+            lambda path: (["https://src/f1", "https://src/f2", "https://src/f3"], {}),
+        )
+        monkeypatch.setattr(
+            "fts_framework.destination.planner.plan",
+            lambda pfns, config: planned.append(pfns) or OrderedDict(
+                [("https://src/f1", "https://dst/f1")]
+            ),
+        )
+        config = _base_config()
+        config["transfer"]["max_files"] = 1
+        from fts_framework.runner import run_campaign
+        run_campaign(config, runs_dir=str(tmp_path))
+        assert planned[0] == ["https://src/f1"]
+
+    def test_max_files_none_uses_all_pfns(self, tmp_path, monkeypatch):
+        _install_run_campaign_mocks(monkeypatch, tmp_path)
+        planned = []
+        monkeypatch.setattr(
+            "fts_framework.inventory.loader.load",
+            lambda path: (["https://src/f1", "https://src/f2"], {}),
+        )
+        monkeypatch.setattr(
+            "fts_framework.destination.planner.plan",
+            lambda pfns, config: planned.append(pfns) or OrderedDict(
+                [("https://src/f1", "https://dst/f1")]
+            ),
+        )
+        config = _base_config()
+        config["transfer"]["max_files"] = None
+        from fts_framework.runner import run_campaign
+        run_campaign(config, runs_dir=str(tmp_path))
+        assert planned[0] == ["https://src/f1", "https://src/f2"]
+
+    def test_max_files_larger_than_inventory_uses_all(self, tmp_path, monkeypatch):
+        _install_run_campaign_mocks(monkeypatch, tmp_path)
+        planned = []
+        monkeypatch.setattr(
+            "fts_framework.inventory.loader.load",
+            lambda path: (["https://src/f1", "https://src/f2"], {}),
+        )
+        monkeypatch.setattr(
+            "fts_framework.destination.planner.plan",
+            lambda pfns, config: planned.append(pfns) or OrderedDict(
+                [("https://src/f1", "https://dst/f1")]
+            ),
+        )
+        config = _base_config()
+        config["transfer"]["max_files"] = 999
+        from fts_framework.runner import run_campaign
+        run_campaign(config, runs_dir=str(tmp_path))
+        assert planned[0] == ["https://src/f1", "https://src/f2"]
+
     def test_empty_file_records_with_retry_max_set(self, tmp_path, monkeypatch):
         """W2: empty file_records with framework_retry_max>0 exits loop without submitting retry."""
         _install_run_campaign_mocks(monkeypatch, tmp_path, file_records=[])

@@ -167,10 +167,13 @@ def compute(file_records, retry_records, config, run_id):
     bucket_width_s = config.get("output", {}).get("timeseries_bucket_s", 60)
     timeseries = _compute_timeseries(finished, bucket_width_s)
 
+    max_files = config.get("transfer", {}).get("max_files")
+
     return {
         "run_id": run_id,
         "test_label": test_label,
         "generated_at": _now_iso(),
+        "max_files": max_files,
 
         # Counts
         "total_files": total,

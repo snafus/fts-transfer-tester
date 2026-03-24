@@ -290,6 +290,15 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
         pfns, supplied_checksums = inventory_loader.load(
             config["transfer"]["source_pfns_file"]
         )
+        max_files = config.get("transfer", {}).get("max_files")
+        if max_files is not None and len(pfns) > max_files:
+            logger.info(
+                "max_files=%d applied: using first %d of %d PFNs",
+                max_files, max_files, len(pfns),
+            )
+            pfns = pfns[:max_files]
+            supplied_checksums = {k: v for k, v in supplied_checksums.items()
+                                  if k in pfns}
         mapping = dest_planner.plan(pfns, config)
 
         verify_checksum = config.get("transfer", {}).get("verify_checksum")
