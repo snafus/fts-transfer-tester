@@ -426,7 +426,12 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
     # -----------------------------------------------------------------------
     # Step 11: Generate reports
     # -----------------------------------------------------------------------
-    renderer.render_all(snapshot, config, subjobs=all_subjobs, runs_dir=runs_dir)
+    renderer.render_all(
+        snapshot, config,
+        subjobs=all_subjobs,
+        file_records=file_records,
+        runs_dir=runs_dir,
+    )
 
     # -----------------------------------------------------------------------
     # Step 12: Post-cleanup

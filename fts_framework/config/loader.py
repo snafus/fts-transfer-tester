@@ -107,6 +107,7 @@ _DEFAULTS = {
             "json": True,
             "markdown": True,
             "html": False,
+            "csv": True,
         },
     },
 }

@@ -507,7 +507,7 @@ def _install_run_campaign_mocks(monkeypatch, tmp_path,
     # renderer
     monkeypatch.setattr(
         "fts_framework.reporting.renderer.render_all",
-        lambda snap, config, subjobs=None, runs_dir="runs": None,
+        lambda snap, config, subjobs=None, file_records=None, runs_dir="runs": None,
     )
 
     # store.mark_completed

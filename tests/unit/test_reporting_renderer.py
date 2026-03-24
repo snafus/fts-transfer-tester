@@ -12,6 +12,7 @@ from fts_framework.reporting.renderer import (
     _fmt_bytes_per_sec,
     _md_escape,
     render_console,
+    render_csv,
     render_html,
     render_markdown,
 )
@@ -462,6 +463,67 @@ class TestRenderHtml:
 # render_all
 # ---------------------------------------------------------------------------
 
+class TestRenderCsv:
+    def _rec(self, **kwargs):
+        base = {
+            "file_id": 1, "job_id": "job-1", "file_state": "FINISHED",
+            "source_surl": "https://src/f.dat", "dest_surl": "https://dst/f.dat",
+            "filesize": 1000, "throughput": 500.0,
+            "throughput_wire": 490.0, "throughput_wall": 480.0,
+            "wall_duration_s": 2.0, "tx_duration": 2.0,
+            "start_time": "2024-01-01T00:00:00Z",
+            "finish_time": "2024-01-01T00:00:02Z",
+            "checksum": "adler32:a1b2c3d4", "reason": "",
+        }
+        base.update(kwargs)
+        return base
+
+    def test_has_header_row(self):
+        result = render_csv([self._rec()])
+        lines = result.strip().split("\n")
+        assert lines[0].startswith("file_id,")
+
+    def test_header_contains_expected_columns(self):
+        result = render_csv([self._rec()])
+        header = result.split("\n")[0]
+        for col in ("file_id", "job_id", "file_state", "source_surl",
+                    "dest_surl", "filesize", "throughput", "wall_duration_s",
+                    "start_time", "finish_time", "checksum", "reason"):
+            assert col in header
+
+    def test_one_row_per_record(self):
+        records = [self._rec(file_id=i) for i in range(5)]
+        result = render_csv(records)
+        lines = [l for l in result.strip().split("\n") if l]
+        assert len(lines) == 6  # header + 5 data rows
+
+    def test_empty_records_returns_header_only(self):
+        result = render_csv([])
+        lines = [l for l in result.strip().split("\n") if l]
+        assert len(lines) == 1
+        assert "file_id" in lines[0]
+
+    def test_values_present_in_row(self):
+        rec = self._rec(source_surl="https://src/myfile.dat",
+                        file_state="FAILED", reason="Timeout")
+        result = render_csv([rec])
+        assert "https://src/myfile.dat" in result
+        assert "FAILED" in result
+        assert "Timeout" in result
+
+    def test_commas_in_reason_quoted(self):
+        rec = self._rec(reason="Transfer failed, host unreachable")
+        result = render_csv([rec])
+        assert '"Transfer failed, host unreachable"' in result
+
+    def test_missing_field_defaults_to_empty(self):
+        rec = {"file_id": 99, "file_state": "FAILED"}
+        result = render_csv([rec])
+        lines = result.strip().split("\n")
+        assert len(lines) == 2
+        assert "99" in lines[1]
+
+
 class TestRenderAll:
     def test_console_written_to_stdout(self, capsys):
         snap = _base_snapshot()
@@ -544,6 +606,51 @@ class TestRenderAll:
         with open(os.path.join(runs_dir, run_id, "reports", "summary.json")) as f:
             loaded = json.load(f)
         assert loaded["run_id"] == snap["run_id"]
+
+    def test_csv_written_when_file_records_provided(self, tmp_path):
+        import os
+        snap = _base_snapshot()
+        cfg = {
+            "fts": {"endpoint": "https://fts.example.org:8446"},
+            "retry": {"min_success_threshold": 0.95},
+            "run": {"test_label": "test_label_value"},
+            "output": {"reports": {"console": False, "json": False,
+                                   "markdown": False, "csv": True}},
+        }
+        run_id = snap["run_id"]
+        os.makedirs(os.path.join(str(tmp_path), run_id, "reports"))
+        file_records = [{"file_id": 1, "job_id": "job-1",
+                         "file_state": "FINISHED",
+                         "source_surl": "https://src/f.dat",
+                         "dest_surl": "https://dst/f.dat",
+                         "filesize": 1000, "throughput": 500.0,
+                         "throughput_wire": 490.0, "throughput_wall": 480.0,
+                         "wall_duration_s": 2.0, "tx_duration": 2.0,
+                         "start_time": "2024-01-01T00:00:00Z",
+                         "finish_time": "2024-01-01T00:00:02Z",
+                         "checksum": "adler32:a1b2c3d4", "reason": ""}]
+        renderer.render_all(snap, cfg, file_records=file_records,
+                            runs_dir=str(tmp_path))
+        assert os.path.isfile(
+            os.path.join(str(tmp_path), run_id, "reports", "files.csv")
+        )
+
+    def test_csv_not_written_when_file_records_none(self, tmp_path):
+        import os
+        snap = _base_snapshot()
+        cfg = {
+            "fts": {"endpoint": "https://fts.example.org:8446"},
+            "retry": {"min_success_threshold": 0.95},
+            "run": {"test_label": "test_label_value"},
+            "output": {"reports": {"console": False, "json": False,
+                                   "markdown": False, "csv": True}},
+        }
+        run_id = snap["run_id"]
+        os.makedirs(os.path.join(str(tmp_path), run_id, "reports"))
+        renderer.render_all(snap, cfg, file_records=None, runs_dir=str(tmp_path))
+        assert not os.path.isfile(
+            os.path.join(str(tmp_path), run_id, "reports", "files.csv")
+        )
 
     def test_defaults_console_json_markdown_on(self, tmp_path, capsys):
         import os

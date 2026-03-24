@@ -24,6 +24,8 @@ Usage::
     render_all(snapshot, config, subjobs=subjobs)
 """
 
+import csv
+import io
 import json
 import logging
 import sys
@@ -40,8 +42,9 @@ _SSL_WARNING = (
 )
 
 
-def render_all(snapshot, config, subjobs=None, runs_dir=store._DEFAULT_RUNS_DIR):
-    # type: (dict, dict, object, str) -> None
+def render_all(snapshot, config, subjobs=None, file_records=None,
+               runs_dir=store._DEFAULT_RUNS_DIR):
+    # type: (dict, dict, object, object, str) -> None
     """Render all enabled report formats and write them to disk.
 
     Args:
@@ -49,6 +52,8 @@ def render_all(snapshot, config, subjobs=None, runs_dir=store._DEFAULT_RUNS_DIR)
         config (dict): Validated framework config dict.
         subjobs (list[dict] or None): ``SubjobRecord`` dicts for the
             per-subjob table in the Markdown report.  Optional.
+        file_records (list[dict] or None): Normalised ``FileRecord`` dicts
+            (with computed metrics) for the per-file CSV report.  Optional.
         runs_dir (str): Base directory for run outputs.
     """
     run_id = snapshot["run_id"]
@@ -75,6 +80,10 @@ def render_all(snapshot, config, subjobs=None, runs_dir=store._DEFAULT_RUNS_DIR)
     if reports_cfg.get("html", False):
         html = render_html(snapshot, config, subjobs=subjobs)
         store.write_report(run_id, "report.html", html, runs_dir=runs_dir)
+
+    if reports_cfg.get("csv", True) and file_records is not None:
+        csv_content = render_csv(file_records)
+        store.write_report(run_id, "files.csv", csv_content, runs_dir=runs_dir)
 
     logger.info("Reports written for run %s", run_id)
 
@@ -405,6 +414,55 @@ def render_html(snapshot, config, subjobs=None):
         "padding:8px 12px;}}</style>\n"
         "</head><body>\n{body}\n</body></html>"
     ).format(title=title, body=body)
+
+
+# ---------------------------------------------------------------------------
+# Per-file CSV
+# ---------------------------------------------------------------------------
+
+# Ordered column definitions: (csv_header, file_record_key)
+_CSV_COLUMNS = [
+    ("file_id",          "file_id"),
+    ("job_id",           "job_id"),
+    ("file_state",       "file_state"),
+    ("source_surl",      "source_surl"),
+    ("dest_surl",        "dest_surl"),
+    ("filesize",         "filesize"),
+    ("throughput",       "throughput"),
+    ("throughput_wire",  "throughput_wire"),
+    ("throughput_wall",  "throughput_wall"),
+    ("wall_duration_s",  "wall_duration_s"),
+    ("tx_duration",      "tx_duration"),
+    ("start_time",       "start_time"),
+    ("finish_time",      "finish_time"),
+    ("checksum",         "checksum"),
+    ("reason",           "reason"),
+]
+
+
+def render_csv(file_records):
+    # type: (list) -> str
+    """Return a CSV string with one row per file record.
+
+    Columns: file_id, job_id, file_state, source_surl, dest_surl, filesize,
+    throughput, throughput_wire, throughput_wall, wall_duration_s,
+    tx_duration, start_time, finish_time, checksum, reason.
+
+    Args:
+        file_records (list[dict]): Normalised ``FileRecord`` dicts, updated
+            in-place by ``metrics.engine`` with computed throughput and
+            duration fields.
+
+    Returns:
+        str: CSV content including header row.
+    """
+    buf = io.StringIO()
+    headers = [col for col, _ in _CSV_COLUMNS]
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(headers)
+    for f in file_records:
+        writer.writerow([f.get(key, "") for _, key in _CSV_COLUMNS])
+    return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------
