@@ -24,20 +24,22 @@ from fts_framework.sequence.state import COMPLETED, FAILED
 
 # Snapshot keys to include in summary reports, with display labels.
 _SUMMARY_METRICS = [
-    ("files_total",       "Files Total"),
-    ("files_succeeded",   "Files Succeeded"),
-    ("files_failed",      "Files Failed"),
-    ("success_rate",      "Success Rate"),
-    ("throughput_mean",   "TP Mean (MB/s)"),
-    ("throughput_p50",    "TP p50 (MB/s)"),
-    ("throughput_p90",    "TP p90 (MB/s)"),
-    ("throughput_stddev", "TP StdDev (MB/s)"),
-    ("campaign_wall_s",   "Wall Time (s)"),
-    ("threshold_passed",  "Threshold Passed"),
+    ("files_total",                       "Files Total"),
+    ("files_succeeded",                   "Files Succeeded"),
+    ("files_failed",                      "Files Failed"),
+    ("success_rate",                      "Success Rate"),
+    ("aggregate_throughput_bytes_per_s",  "Agg TP (MB/s)"),
+    ("throughput_mean",                   "TP Mean (MB/s)"),
+    ("throughput_p50",                    "TP p50 (MB/s)"),
+    ("throughput_p90",                    "TP p90 (MB/s)"),
+    ("throughput_stddev",                 "TP StdDev (MB/s)"),
+    ("campaign_wall_s",                   "Wall Time (s)"),
+    ("threshold_passed",                  "Threshold Passed"),
 ]
 
 # Keys whose values are in bytes/s and must be formatted as MB/s.
 _THROUGHPUT_KEYS = frozenset([
+    "aggregate_throughput_bytes_per_s",
     "throughput_mean",
     "throughput_p50",
     "throughput_p90",
@@ -214,7 +216,7 @@ def _write_markdown(sequence_dir, rows, aggregates, state):
         headers = (
             ["Case"]
             + param_keys
-            + ["Trials", "Success Rate",
+            + ["Trials", "Success Rate", "Agg TP (MB/s)",
                "TP Mean (MB/s)", "TP p50 (MB/s)", "TP p90 (MB/s)",
                "Wall (s)"]
         )
@@ -241,6 +243,7 @@ def _write_markdown(sequence_dir, rows, aggregates, state):
                 + [
                     trials_str,
                     _mv("success_rate"),
+                    _mv("aggregate_throughput_bytes_per_s"),
                     _mv("throughput_mean"),
                     _mv("throughput_p50"),
                     _mv("throughput_p90"),
@@ -255,17 +258,18 @@ def _write_markdown(sequence_dir, rows, aggregates, state):
     lines.append("## Individual Runs")
     lines.append("")
     lines.append("| Case | Trial | Run ID | Status | "
-                 "Success Rate | TP Mean (MB/s) | Wall (s) |")
-    lines.append("|---|---|---|---|---|---|---|")
+                 "Success Rate | Agg TP (MB/s) | TP Mean (MB/s) | Wall (s) |")
+    lines.append("|---|---|---|---|---|---|---|---|")
     for r in rows:
-        lines.append("| {} | {} | {} | {} | {} | {} | {} |".format(
+        lines.append("| {} | {} | {} | {} | {} | {} | {} | {} |".format(
             r["case_index"],
             r["trial_index"],
             r["run_id"] or "-",
             r["status"],
-            _fmt_val("success_rate",    r.get("success_rate")),
-            _fmt_val("throughput_mean", r.get("throughput_mean")),
-            _fmt_val("campaign_wall_s", r.get("campaign_wall_s")),
+            _fmt_val("success_rate",                     r.get("success_rate")),
+            _fmt_val("aggregate_throughput_bytes_per_s", r.get("aggregate_throughput_bytes_per_s")),
+            _fmt_val("throughput_mean",                  r.get("throughput_mean")),
+            _fmt_val("campaign_wall_s",                  r.get("campaign_wall_s")),
         ))
     lines.append("")
 
