@@ -5,7 +5,7 @@ setup(
     version="0.1.0",
     description="Production-grade FTS3 REST transfer test framework",
     packages=find_packages(exclude=["tests", "tests.*"]),
-    python_requires=">=3.6, <3.7",
+    python_requires=">=3.6",
     install_requires=[
         "requests>=2.27.1,<2.28",   # 2.28+ dropped Python 3.6 support
         "urllib3>=1.26.0,<2",       # urllib3 2.x dropped Python 3.6 support

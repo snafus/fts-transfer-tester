@@ -7,50 +7,110 @@ on:
     branches: ["main", "develop"]
 
 jobs:
-  # Canonical: tests against the target runtime with all pinned deps via tox.
-  test-py36:
-    name: Test (Python 3.6.8 / pinned deps)
-    runs-on: ubuntu-20.04       # last Ubuntu release with Python 3.6 support
+
+  # ── Rocky 8 / Python 3.6.8  ────────────────────────────────────────────────
+  # Canonical production target.  Pinned deps from requirements.txt.
+  # Rocky 8 ships Python 3.6.8 as the default python3.
+  rocky8-py36:
+    name: Rocky 8 · Python 3.6.8 (canonical)
+    runs-on: ubuntu-latest
+    container:
+      image: rockylinux:8
 
     steps:
-      - uses: actions/checkout@v3
+      - name: Install system prerequisites
+        run: dnf install -y git python3 python3-pip python3-devel gcc
 
-      - name: Set up Python 3.6.8
-        uses: actions/setup-python@v4
-        with:
-          python-version: "3.6.8"
+      - uses: actions/checkout@v4
 
       - name: Pin pip to last Python 3.6-compatible version
-        run: python -m pip install --upgrade "pip==21.3.1"
+        run: python3 -m pip install --upgrade "pip==21.3.1"
 
-      - name: Install tox
-        run: pip install "tox==3.28.0"
+      - name: Install pinned production + test dependencies
+        run: |
+          python3 -m pip install \
+            "requests==2.27.1" \
+            "urllib3==1.26.18" \
+            "PyYAML==5.4.1" \
+            "certifi==2021.10.8" \
+            "pyflakes==2.4.0" \
+            "pytest==4.6.11" \
+            "responses==0.13.4" \
+            "freezegun==1.1.0"
+          python3 -m pip install -e .
 
-      - name: Run tox (py36 env — pinned deps + pyflakes + pytest)
-        run: tox -e py36
+      - name: Lint (pyflakes)
+        run: python3 -m pyflakes fts_framework/
 
-  # Smoke: tests against the current stable Python with unpinned deps.
-  # Catches forward-compatibility regressions early.
-  test-current:
-    name: Test (current Python / latest deps)
+      - name: Unit tests
+        run: python3 -m pytest tests/unit/ -v --tb=short
+
+  # ── Rocky 9 / Python 3.9  ──────────────────────────────────────────────────
+  # Rocky 9 ships Python 3.9 as the default python3.
+  # Uses latest-compatible deps; install_requires from setup.py skipped via
+  # --no-deps because the py3.6-era upper bounds are not needed on 3.9+.
+  rocky9-py39:
+    name: Rocky 9 · Python 3.9
     runs-on: ubuntu-latest
+    container:
+      image: rockylinux:9
 
     steps:
-      - uses: actions/checkout@v3
+      - name: Install system prerequisites
+        run: dnf install -y git python3 python3-pip
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+
+      - name: Upgrade pip
+        run: python3 -m pip install --upgrade pip
+
+      - name: Install test dependencies
+        run: |
+          python3 -m pip install \
+            PyYAML requests \
+            pyflakes pytest responses freezegun
+          python3 -m pip install --no-deps -e .
+
+      - name: Lint (pyflakes)
+        run: python3 -m pyflakes fts_framework/
+
+      - name: Unit tests
+        run: python3 -m pytest tests/unit/ -v --tb=short
+
+  # ── Rocky 9 / Python 3.13  ─────────────────────────────────────────────────
+  # Forward-compatibility smoke test.  Python 3.13 is installed via
+  # actions/setup-python; its pre-built binary is bind-mounted into the
+  # Rocky 9 container (glibc 2.34+ on Rocky 9 satisfies the runtime
+  # requirement).
+  rocky9-py313:
+    name: Rocky 9 · Python 3.13
+    runs-on: ubuntu-latest
+    container:
+      image: rockylinux:9
+
+    steps:
+      - name: Install system prerequisites
+        # tar/gzip/bzip2/xz are required by actions/setup-python to extract
+        # the Python toolchain archive inside the container.
+        run: dnf install -y git tar gzip bzip2 xz findutils
+
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
+          python-version: "3.13"
 
-      - name: Install dependencies
+      - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install "PyYAML==5.4.1" requests pytest responses freezegun pyflakes
-          pip install -e .
+          python -m pip install \
+            PyYAML requests \
+            pyflakes pytest responses freezegun
+          python -m pip install --no-deps -e .
 
-      - name: Lint with pyflakes
-        run: pyflakes fts_framework/
+      - name: Lint (pyflakes)
+        run: python -m pyflakes fts_framework/
 
-      - name: Run unit tests
-        run: pytest tests/unit/ -v --tb=short
+      - name: Unit tests
+        run: python -m pytest tests/unit/ -v --tb=short
