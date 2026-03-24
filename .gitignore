@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# tox
+.tox/
+
+# pytest
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Run outputs (test data, not source)
+runs/
+
+# Editor / OS
+.DS_Store
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Secrets / tokens — never commit
+*.token
+*.pem
+*.key

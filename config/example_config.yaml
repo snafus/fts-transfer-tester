@@ -1,0 +1,57 @@
+---
+# FTS3 Test Framework — Example Configuration
+# All fields shown; optional fields include their defaults.
+
+run:
+  run_id: null                          # null = auto-generate at startup
+  test_label: "campaign_march_2026"     # used in destination path and reports
+
+fts:
+  endpoint: "https://fts.example.org:8446"
+  ssl_verify: true                      # true | false | "/path/to/ca-bundle.pem"
+
+tokens:
+  fts_submit: "eyJhbGciOiJSUzI1NiJ9..."
+  source_read: "eyJhbGciOiJSUzI1NiJ9..."   # may be same value as fts_submit
+  dest_write: "eyJhbGciOiJSUzI1NiJ9..."
+
+transfer:
+  source_pfns_file: "sources.txt"       # one HTTPS PFN per line
+  dst_prefix: "https://storage.example.org/test-data"
+  preserve_extension: false             # if true: testfile_000001.dat etc.
+  checksum_algorithm: "adler32"         # adler32 only
+  verify_checksum: "both"               # both | source | target | none
+  overwrite: false
+  chunk_size: 200                       # max 200 (FTS3 limit)
+  priority: 3                           # 1 (lowest) – 5 (highest)
+  activity: "default"                   # FTS3 activity share label
+  job_metadata: {}                      # user-supplied; merged with framework fields
+
+concurrency:
+  want_digest_workers: 8                # parallel HEAD threads for checksum fetch
+
+submission:
+  scan_window_s: 300                    # 500-recovery: scan window in seconds; minimum enforced: 60
+
+polling:
+  initial_interval_s: 30
+  backoff_multiplier: 1.5
+  max_interval_s: 300
+  campaign_timeout_s: 86400             # 24 hours
+
+cleanup:
+  before: false                         # DELETE destination files before transfers
+  after: false                          # DELETE successfully transferred files after
+
+retry:
+  fts_retry_max: 2                      # FTS3-level retries per file
+  framework_retry_max: 0                # framework-level resubmission rounds (0 = off)
+  min_success_threshold: 0.95           # campaign PASS requires >= this success rate
+
+output:
+  base_dir: "runs"
+  reports:
+    console: true
+    json: true
+    markdown: true
+    html: false

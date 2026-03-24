@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "develop"]
+  pull_request:
+    branches: ["main", "develop"]
+
+jobs:
+  # Canonical: tests against the target runtime with all pinned deps via tox.
+  test-py36:
+    name: Test (Python 3.6.8 / pinned deps)
+    runs-on: ubuntu-20.04       # last Ubuntu release with Python 3.6 support
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python 3.6.8
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.6.8"
+
+      - name: Pin pip to last Python 3.6-compatible version
+        run: python -m pip install --upgrade "pip==21.3.1"
+
+      - name: Install tox
+        run: pip install "tox==3.28.0"
+
+      - name: Run tox (py36 env — pinned deps + pyflakes + pytest)
+        run: tox -e py36
+
+  # Smoke: tests against the current stable Python with unpinned deps.
+  # Catches forward-compatibility regressions early.
+  test-current:
+    name: Test (current Python / latest deps)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.x"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install "PyYAML==5.4.1" requests pytest responses freezegun pyflakes
+          pip install -e .
+
+      - name: Lint with pyflakes
+        run: pyflakes fts_framework/
+
+      - name: Run unit tests
+        run: pytest tests/unit/ -v --tb=short

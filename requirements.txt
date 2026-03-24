@@ -1,0 +1,4 @@
+requests==2.27.1
+urllib3==1.26.18
+PyYAML==5.4.1
+certifi==2021.10.8
