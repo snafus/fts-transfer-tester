@@ -520,10 +520,13 @@ class TestCompute:
             "total_files", "finished", "failed", "canceled",
             "not_used", "staging_unsupported",
             "success_rate", "failure_rate", "threshold_passed",
-            "throughput_mean", "throughput_p50", "throughput_p90",
+            "campaign_start", "campaign_end", "campaign_wall_s",
+            "throughput_mean", "throughput_stddev",
+            "throughput_p50", "throughput_p90",
             "throughput_p95", "throughput_p99", "throughput_max",
             "aggregate_throughput_bytes_per_s",
-            "duration_mean_s", "duration_p50_s", "duration_p90_s", "duration_p95_s",
+            "duration_mean_s", "duration_stddev_s",
+            "duration_p50_s", "duration_p90_s", "duration_p95_s",
             "total_retries", "files_with_retries", "retry_rate", "retry_distribution",
             "peak_concurrency", "mean_concurrency", "concurrency_timeline",
             "failure_reasons", "throughput_timeline", "ssl_verify_disabled",
@@ -613,6 +616,76 @@ class TestCompute:
         f = _file(file_state="FINISHED", start_time="", finish_time="")
         snap = compute([f], [], _config(), "r")
         assert snap["duration_mean_s"] is None
+
+    def test_throughput_stddev_populated_with_multiple_files(self):
+        files = [
+            _file(file_id=1, file_state="FINISHED", throughput=100.0),
+            _file(file_id=2, file_state="FINISHED", throughput=200.0),
+            _file(file_id=3, file_state="FINISHED", throughput=300.0),
+        ]
+        snap = compute(files, [], _config(), "r")
+        assert snap["throughput_stddev"] is not None
+        assert snap["throughput_stddev"] > 0
+
+    def test_throughput_stddev_none_with_single_file(self):
+        snap = compute([_file(file_state="FINISHED", throughput=100.0)], [], _config(), "r")
+        assert snap["throughput_stddev"] is None
+
+    def test_throughput_stddev_none_when_no_finished(self):
+        snap = compute([_file(file_state="FAILED", throughput=0.0)], [], _config(), "r")
+        assert snap["throughput_stddev"] is None
+
+    def test_duration_stddev_populated_with_multiple_files(self):
+        files = [
+            _file(file_id=1, file_state="FINISHED",
+                  start_time="2026-01-01T00:00:00",
+                  finish_time="2026-01-01T00:00:10"),
+            _file(file_id=2, file_state="FINISHED",
+                  start_time="2026-01-01T00:00:00",
+                  finish_time="2026-01-01T00:00:30"),
+        ]
+        snap = compute(files, [], _config(), "r")
+        assert snap["duration_stddev_s"] is not None
+        assert snap["duration_stddev_s"] > 0
+
+    def test_duration_stddev_none_with_single_file(self):
+        f = _file(file_state="FINISHED",
+                  start_time="2026-01-01T00:00:00",
+                  finish_time="2026-01-01T00:00:10")
+        snap = compute([f], [], _config(), "r")
+        assert snap["duration_stddev_s"] is None
+
+    def test_campaign_wall_s_populated(self):
+        files = [
+            _file(file_id=1, file_state="FINISHED",
+                  start_time="2026-01-01T00:00:00",
+                  finish_time="2026-01-01T00:00:10"),
+            _file(file_id=2, file_state="FINISHED",
+                  start_time="2026-01-01T00:00:05",
+                  finish_time="2026-01-01T00:00:30"),
+        ]
+        snap = compute(files, [], _config(), "r")
+        # campaign spans 00:00:00 to 00:00:30 = 30s
+        assert snap["campaign_wall_s"] == pytest.approx(30.0)
+        assert snap["campaign_start"] is not None
+        assert snap["campaign_end"] is not None
+
+    def test_campaign_times_none_when_no_timestamps(self):
+        f = _file(file_state="FINISHED", start_time="", finish_time="")
+        snap = compute([f], [], _config(), "r")
+        assert snap["campaign_start"] is None
+        assert snap["campaign_end"] is None
+        assert snap["campaign_wall_s"] is None
+
+    def test_campaign_start_end_iso_format(self):
+        f = _file(file_state="FINISHED",
+                  start_time="2026-01-01T00:00:00",
+                  finish_time="2026-01-01T00:01:00")
+        snap = compute([f], [], _config(), "r")
+        assert "T" in snap["campaign_start"]
+        assert snap["campaign_start"].endswith("Z")
+        assert "T" in snap["campaign_end"]
+        assert snap["campaign_end"].endswith("Z")
 
     def test_retry_stats(self):
         files = [_file(file_id=1, file_state="FINISHED"),

@@ -118,13 +118,15 @@ def compute(file_records, retry_records, config, run_id):
 
     if throughput_vals:
         throughput_mean = statistics.mean(throughput_vals)
+        throughput_stddev = (statistics.stdev(throughput_vals)
+                             if len(throughput_vals) >= 2 else None)
         throughput_p50 = _percentile(throughput_vals, 50)
         throughput_p90 = _percentile(throughput_vals, 90)
         throughput_p95 = _percentile(throughput_vals, 95)
         throughput_p99 = _percentile(throughput_vals, 99)
         throughput_max = max(throughput_vals)
     else:
-        throughput_mean = throughput_p50 = throughput_p90 = None
+        throughput_mean = throughput_stddev = throughput_p50 = throughput_p90 = None
         throughput_p95 = throughput_p99 = throughput_max = None
 
     agg_tp = _aggregate_throughput(finished)
@@ -136,11 +138,16 @@ def compute(file_records, retry_records, config, run_id):
     ]
     if duration_vals:
         duration_mean = statistics.mean(duration_vals)
+        duration_stddev = (statistics.stdev(duration_vals)
+                           if len(duration_vals) >= 2 else None)
         duration_p50 = _percentile(duration_vals, 50)
         duration_p90 = _percentile(duration_vals, 90)
         duration_p95 = _percentile(duration_vals, 95)
     else:
-        duration_mean = duration_p50 = duration_p90 = duration_p95 = None
+        duration_mean = duration_stddev = duration_p50 = duration_p90 = duration_p95 = None
+
+    # --- Step 4b: campaign wall time ---
+    campaign_start, campaign_end, campaign_wall_s = _campaign_times(finished)
 
     # --- Step 5: retry stats ---
     total_retries = len(retry_records)
@@ -188,8 +195,14 @@ def compute(file_records, retry_records, config, run_id):
         "failure_rate": failure_rate,
         "threshold_passed": threshold_passed,
 
+        # Campaign wall time
+        "campaign_start": campaign_start,
+        "campaign_end": campaign_end,
+        "campaign_wall_s": campaign_wall_s,
+
         # Throughput
         "throughput_mean": throughput_mean,
+        "throughput_stddev": throughput_stddev,
         "throughput_p50": throughput_p50,
         "throughput_p90": throughput_p90,
         "throughput_p95": throughput_p95,
@@ -199,6 +212,7 @@ def compute(file_records, retry_records, config, run_id):
 
         # Duration
         "duration_mean_s": duration_mean,
+        "duration_stddev_s": duration_stddev,
         "duration_p50_s": duration_p50,
         "duration_p90_s": duration_p90,
         "duration_p95_s": duration_p95,
@@ -274,6 +288,35 @@ def _compute_file_metrics(file_records):
 # ---------------------------------------------------------------------------
 # Aggregate throughput
 # ---------------------------------------------------------------------------
+
+def _campaign_times(finished_files):
+    # type: (list) -> tuple
+    """Return (campaign_start_iso, campaign_end_iso, wall_s) from file timestamps.
+
+    campaign_start is the earliest ``start_time`` across all finished files;
+    campaign_end is the latest ``finish_time``.  Both are returned as ISO
+    strings.  Returns ``(None, None, None)`` if no files have valid timestamps.
+    """
+    timed = [
+        f for f in finished_files
+        if f.get("start_time") and f.get("finish_time")
+        and _parse_iso(f["start_time"]) is not None
+        and _parse_iso(f["finish_time"]) is not None
+    ]
+    if not timed:
+        return None, None, None
+
+    start_dts = [_parse_iso(f["start_time"]) for f in timed]
+    finish_dts = [_parse_iso(f["finish_time"]) for f in timed]
+    campaign_start = min(start_dts)
+    campaign_end = max(finish_dts)
+    wall_s = (campaign_end - campaign_start).total_seconds()
+    return (
+        campaign_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        campaign_end.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        wall_s if wall_s > 0 else None,
+    )
+
 
 def _aggregate_throughput(finished_files):
     # type: (list) -> object

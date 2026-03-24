@@ -152,6 +152,9 @@ def render_console(snapshot, config):
     tp_p95 = snapshot.get("throughput_p95")
     if tp_mean is not None:
         _add("   Mean    : {}".format(_fmt_bytes_per_sec(tp_mean)))
+        tp_sd = snapshot.get("throughput_stddev")
+        if tp_sd is not None:
+            _add("   StdDev  : {}".format(_fmt_bytes_per_sec(tp_sd)))
         _add("   p50     : {}".format(_fmt_bytes_per_sec(tp_p50)))
         _add("   p90     : {}".format(_fmt_bytes_per_sec(tp_p90)))
         _add("   p95     : {}".format(_fmt_bytes_per_sec(tp_p95)))
@@ -164,8 +167,11 @@ def render_console(snapshot, config):
     d_p50 = snapshot.get("duration_p50_s")
     d_p90 = snapshot.get("duration_p90_s")
     if d_mean is not None:
-        _add("   Mean    : {:.1f}s    p50: {:.1f}s    p90: {:.1f}s".format(
-            d_mean,
+        _add("   Mean    : {:.1f}s".format(d_mean))
+        d_sd = snapshot.get("duration_stddev_s")
+        if d_sd is not None:
+            _add("   StdDev  : {:.1f}s".format(d_sd))
+        _add("   p50     : {:.1f}s    p90: {:.1f}s".format(
             d_p50 if d_p50 is not None else 0.0,
             d_p90 if d_p90 is not None else 0.0,
         ))
@@ -174,6 +180,7 @@ def render_console(snapshot, config):
     _add("")
 
     agg = snapshot.get("aggregate_throughput_bytes_per_s")
+    cwall = snapshot.get("campaign_wall_s")
     _add(" Peak concurrency  : {} files".format(snapshot.get("peak_concurrency", 0)))
     _add(" Total retries     : {} ({} files)".format(
         snapshot.get("total_retries", 0),
@@ -181,6 +188,10 @@ def render_console(snapshot, config):
     ))
     if agg is not None:
         _add(" Aggregate throughput: {}".format(_fmt_bytes_per_sec(agg)))
+    if cwall is not None:
+        _add(" Campaign wall time  : {:.0f}s ({})".format(
+            cwall, _fmt_duration(cwall)
+        ))
 
     ssl_state = "DISABLED" if snapshot.get("ssl_verify_disabled") else "ENABLED"
     _add("")
@@ -263,6 +274,9 @@ def render_markdown(snapshot, config, subjobs=None):
         _add("| Statistic | Value |")
         _add("|-----------|-------|")
         _add("| Mean | {} |".format(_fmt_bytes_per_sec(tp_mean)))
+        tp_sd = snapshot.get("throughput_stddev")
+        if tp_sd is not None:
+            _add("| StdDev | {} |".format(_fmt_bytes_per_sec(tp_sd)))
         _add("| p50 | {} |".format(_fmt_bytes_per_sec(snapshot.get("throughput_p50"))))
         _add("| p90 | {} |".format(_fmt_bytes_per_sec(snapshot.get("throughput_p90"))))
         _add("| p95 | {} |".format(_fmt_bytes_per_sec(snapshot.get("throughput_p95"))))
@@ -283,6 +297,9 @@ def render_markdown(snapshot, config, subjobs=None):
         _add("| Statistic | Value (s) |")
         _add("|-----------|-----------|")
         _add("| Mean | {:.2f} |".format(d_mean))
+        d_sd = snapshot.get("duration_stddev_s")
+        if d_sd is not None:
+            _add("| StdDev | {:.2f} |".format(d_sd))
         _add("| p50 | {:.2f} |".format(snapshot.get("duration_p50_s") if snapshot.get("duration_p50_s") is not None else 0.0))
         _add("| p90 | {:.2f} |".format(snapshot.get("duration_p90_s") if snapshot.get("duration_p90_s") is not None else 0.0))
         _add("| p95 | {:.2f} |".format(snapshot.get("duration_p95_s") if snapshot.get("duration_p95_s") is not None else 0.0))
@@ -297,6 +314,11 @@ def render_markdown(snapshot, config, subjobs=None):
     _add("|--------|-------|")
     _add("| Peak concurrency | {} |".format(snapshot.get("peak_concurrency", 0)))
     _add("| Mean concurrency | {:.1f} |".format(snapshot.get("mean_concurrency", 0.0)))
+    cwall = snapshot.get("campaign_wall_s")
+    if cwall is not None:
+        _add("| Campaign start | {} |".format(snapshot.get("campaign_start", "")))
+        _add("| Campaign end | {} |".format(snapshot.get("campaign_end", "")))
+        _add("| Campaign wall time | {:.0f}s ({}) |".format(cwall, _fmt_duration(cwall)))
     _add("")
 
     # 6. Retry distribution
@@ -566,6 +588,21 @@ def render_timeseries_csv(timeseries):
 # ---------------------------------------------------------------------------
 # Formatting helpers
 # ---------------------------------------------------------------------------
+
+def _fmt_duration(seconds):
+    # type: (object) -> str
+    """Format a duration in seconds as a human-readable string (e.g. '1h 23m 45s')."""
+    if seconds is None:
+        return "N/A"
+    s = int(seconds)
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    if h:
+        return "{}h {:02d}m {:02d}s".format(h, m, sec)
+    if m:
+        return "{}m {:02d}s".format(m, sec)
+    return "{}s".format(sec)
+
 
 def _fmt_bytes_per_sec(val):
     # type: (object) -> str
