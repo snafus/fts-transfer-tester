@@ -227,6 +227,9 @@ def write_payload(run_id, chunk_index, retry_round, payload,
     # type: (str, int, int, dict, str) -> str
     """Persist the POST body for a chunk before transmission.
 
+    Storage tokens (``source_token``, ``destination_token``) are redacted
+    from the persisted copy; the caller's dict is not modified.
+
     Args:
         run_id (str): Unique run identifier.
         chunk_index (int): Zero-based chunk index.
@@ -241,7 +244,7 @@ def write_payload(run_id, chunk_index, retry_round, payload,
     filename = "chunk_{:04d}_r{}.json".format(chunk_index, retry_round)
     rel_path = os.path.join("submitted_payloads", filename)
     abs_path = os.path.join(runs_dir, run_id, rel_path)
-    _write_json(abs_path, payload)
+    _write_json(abs_path, _redact_payload(payload))
     logger.debug("Payload written: %s", abs_path)
     return rel_path
 
@@ -358,6 +361,22 @@ def redact_config(config):
 def _manifest_path(run_id, runs_dir):
     # type: (str, str) -> str
     return os.path.join(runs_dir, run_id, "manifest.json")
+
+
+def _redact_payload(payload):
+    # type: (dict) -> dict
+    """Return a deep copy of *payload* with storage token values replaced.
+
+    Replaces ``source_token`` and ``destination_token`` under ``params`` with
+    ``"<REDACTED>"``.  All other payload keys are preserved verbatim.
+    """
+    redacted = copy.deepcopy(payload)
+    params = redacted.get("params")
+    if isinstance(params, dict):
+        for key in ("source_token", "destination_token"):
+            if key in params:
+                params[key] = "<REDACTED>"
+    return redacted
 
 
 def _write_redacted_config(run_dir, config):

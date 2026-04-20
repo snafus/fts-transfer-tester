@@ -139,6 +139,12 @@ def build_payload(chunk_mapping, checksums, config, run_id, chunk_index, retry_r
     if overwrite:
         payload["params"]["overwrite"] = True
 
+    # Unmanaged token mode: pass storage tokens directly in job params so FTS3
+    # uses them for storage access without attempting token exchange.
+    if transfer_cfg.get("storage_tokens", False):
+        payload["params"]["source_token"] = config["tokens"]["source_read"]
+        payload["params"]["destination_token"] = config["tokens"]["dest_write"]
+
     logger.debug(
         "Built payload for chunk %d (retry_round=%d): %d files",
         chunk_index, retry_round, len(files),

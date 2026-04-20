@@ -68,11 +68,16 @@ def _mapping(*keys):
 
 def _config(chunk_size=200, scan_window_s=300, fts_retry_max=2,
             priority=3, activity=None, job_metadata=None,
-            verify_checksum="both", overwrite=False):
+            verify_checksum="both", overwrite=False, storage_tokens=False):
     return {
         "run": {"test_label": "campaign_test"},
         "fts": {
             "endpoint": "https://fts3.example.org:8446",
+        },
+        "tokens": {
+            "fts_submit": "tok_submit",
+            "source_read": "tok_source",
+            "dest_write": "tok_dest",
         },
         "transfer": {
             "chunk_size": chunk_size,
@@ -82,6 +87,7 @@ def _config(chunk_size=200, scan_window_s=300, fts_retry_max=2,
             "priority": priority,
             "activity": activity,
             "job_metadata": job_metadata or {},
+            "storage_tokens": storage_tokens,
         },
         "submission": {
             "scan_window_s": scan_window_s,
@@ -264,6 +270,27 @@ class TestBuildPayload:
         assert meta["run_id"] == RUN_ID
         assert meta["chunk_index"] == 3
         assert meta["retry_round"] == 1
+
+    def test_storage_tokens_absent_by_default(self):
+        mapping = self._make_chunk(["https://src.example.org/f.dat"])
+        payload = build_payload(mapping, {}, _config(), RUN_ID, 0, 0)
+        assert "source_token" not in payload["params"]
+        assert "destination_token" not in payload["params"]
+
+    def test_storage_tokens_included_when_enabled(self):
+        mapping = self._make_chunk(["https://src.example.org/f.dat"])
+        payload = build_payload(mapping, {}, _config(storage_tokens=True), RUN_ID, 0, 0)
+        assert payload["params"]["source_token"] == "tok_source"
+        assert payload["params"]["destination_token"] == "tok_dest"
+
+    def test_storage_tokens_uses_correct_roles(self):
+        mapping = self._make_chunk(["https://src.example.org/f.dat"])
+        cfg = _config(storage_tokens=True)
+        cfg["tokens"]["source_read"] = "source_role_tok"
+        cfg["tokens"]["dest_write"] = "dest_role_tok"
+        payload = build_payload(mapping, cfg["tokens"], cfg, RUN_ID, 0, 0)
+        assert payload["params"]["source_token"] == "source_role_tok"
+        assert payload["params"]["destination_token"] == "dest_role_tok"
 
 
 # ---------------------------------------------------------------------------

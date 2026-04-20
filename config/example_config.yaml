@@ -34,6 +34,7 @@ transfer:
   priority: 3                           # 1 (lowest) – 5 (highest)
   activity: "default"                   # FTS3 activity share label
   job_metadata: {}                      # user-supplied; merged with framework fields
+  storage_tokens: false                 # true = pass source_read/dest_write in job params (unmanaged token mode)
 
 concurrency:
   want_digest_workers: 8                # parallel HEAD threads for checksum fetch

@@ -79,6 +79,7 @@ _DEFAULTS = {
         "priority": 3,
         "activity": "default",
         "job_metadata": {},
+        "storage_tokens": False,
     },
     "concurrency": {
         "want_digest_workers": 8,
@@ -459,6 +460,14 @@ def _validate_transfer(config):
     max_files = config["transfer"]["max_files"]
     if max_files is not None:
         _require_int(max_files, "transfer.max_files", min_val=1)
+
+    storage_tokens = config["transfer"]["storage_tokens"]
+    if not isinstance(storage_tokens, bool):
+        raise ConfigError(
+            "transfer.storage_tokens must be a boolean (true/false), got {!r}".format(
+                storage_tokens
+            )
+        )
 
 
 def _validate_concurrency(config):

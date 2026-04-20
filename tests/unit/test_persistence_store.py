@@ -23,6 +23,7 @@ from fts_framework.persistence.store import (
     write_metrics,
     write_cleanup_audit,
     redact_config,
+    _redact_payload,
 )
 from fts_framework.exceptions import ResumeError
 
@@ -447,6 +448,96 @@ class TestWritePayload:
             raw = fh.read()
         # Payloads never contain tokens by design; verify the write itself
         assert "tok_submit_secret" not in raw
+
+    def test_storage_tokens_redacted_in_persisted_payload(self, tmp_path):
+        init_run_directory("r1", _config(), runs_dir=str(tmp_path))
+        payload = {
+            "files": [],
+            "params": {
+                "priority": 3,
+                "source_token": "real_source_token_value",
+                "destination_token": "real_dest_token_value",
+            },
+        }
+        write_payload("r1", 0, 0, payload, runs_dir=str(tmp_path))
+        path = os.path.join(str(tmp_path), "r1", "submitted_payloads",
+                            "chunk_0000_r0.json")
+        with open(path) as fh:
+            on_disk = json.load(fh)
+        assert on_disk["params"]["source_token"] == "<REDACTED>"
+        assert on_disk["params"]["destination_token"] == "<REDACTED>"
+
+    def test_storage_token_redaction_does_not_mutate_caller_payload(self, tmp_path):
+        init_run_directory("r1", _config(), runs_dir=str(tmp_path))
+        payload = {
+            "params": {
+                "source_token": "real_source_token_value",
+                "destination_token": "real_dest_token_value",
+            }
+        }
+        write_payload("r1", 0, 0, payload, runs_dir=str(tmp_path))
+        assert payload["params"]["source_token"] == "real_source_token_value"
+        assert payload["params"]["destination_token"] == "real_dest_token_value"
+
+    def test_non_token_params_preserved_after_redaction(self, tmp_path):
+        init_run_directory("r1", _config(), runs_dir=str(tmp_path))
+        payload = {
+            "params": {
+                "priority": 4,
+                "verify_checksum": "both",
+                "source_token": "tok",
+            }
+        }
+        write_payload("r1", 0, 0, payload, runs_dir=str(tmp_path))
+        path = os.path.join(str(tmp_path), "r1", "submitted_payloads",
+                            "chunk_0000_r0.json")
+        with open(path) as fh:
+            on_disk = json.load(fh)
+        assert on_disk["params"]["priority"] == 4
+        assert on_disk["params"]["verify_checksum"] == "both"
+
+
+# ---------------------------------------------------------------------------
+# _redact_payload
+# ---------------------------------------------------------------------------
+
+class TestRedactPayload:
+    def test_source_token_replaced(self):
+        payload = {"params": {"source_token": "secret", "priority": 3}}
+        result = _redact_payload(payload)
+        assert result["params"]["source_token"] == "<REDACTED>"
+
+    def test_destination_token_replaced(self):
+        payload = {"params": {"destination_token": "secret"}}
+        result = _redact_payload(payload)
+        assert result["params"]["destination_token"] == "<REDACTED>"
+
+    def test_both_tokens_replaced(self):
+        payload = {"params": {"source_token": "s", "destination_token": "d"}}
+        result = _redact_payload(payload)
+        assert result["params"]["source_token"] == "<REDACTED>"
+        assert result["params"]["destination_token"] == "<REDACTED>"
+
+    def test_no_tokens_in_params_unchanged(self):
+        payload = {"params": {"priority": 3, "verify_checksum": "both"}}
+        result = _redact_payload(payload)
+        assert result["params"] == {"priority": 3, "verify_checksum": "both"}
+
+    def test_no_params_key_unchanged(self):
+        payload = {"files": []}
+        result = _redact_payload(payload)
+        assert result == {"files": []}
+
+    def test_original_not_mutated(self):
+        payload = {"params": {"source_token": "secret"}}
+        _ = _redact_payload(payload)
+        assert payload["params"]["source_token"] == "secret"
+
+    def test_returns_new_dict(self):
+        payload = {"params": {"source_token": "s"}}
+        result = _redact_payload(payload)
+        assert result is not payload
+        assert result["params"] is not payload["params"]
 
 
 # ---------------------------------------------------------------------------
