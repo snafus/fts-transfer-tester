@@ -139,11 +139,14 @@ def build_payload(chunk_mapping, checksums, config, run_id, chunk_index, retry_r
     if overwrite:
         payload["params"]["overwrite"] = True
 
-    # Unmanaged token mode: pass storage tokens directly in job params so FTS3
-    # uses them for storage access without attempting token exchange.
+    # Unmanaged token mode: pass storage tokens directly and set unmanaged_tokens
+    # so FTS3 does not register them with its token lifecycle manager (no
+    # token exchange or refresh attempts). Requires fts3.AllowNonManagedTokens
+    # on the FTS3 server.
     if transfer_cfg.get("storage_tokens", False):
         payload["params"]["source_token"] = config["tokens"]["source_read"]
         payload["params"]["destination_token"] = config["tokens"]["dest_write"]
+        payload["params"]["unmanaged_tokens"] = True
 
     logger.debug(
         "Built payload for chunk %d (retry_round=%d): %d files",

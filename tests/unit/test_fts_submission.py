@@ -282,6 +282,12 @@ class TestBuildPayload:
         payload = build_payload(mapping, {}, _config(storage_tokens=True), RUN_ID, 0, 0)
         assert payload["params"]["source_token"] == "tok_source"
         assert payload["params"]["destination_token"] == "tok_dest"
+        assert payload["params"]["unmanaged_tokens"] is True
+
+    def test_unmanaged_tokens_absent_when_disabled(self):
+        mapping = self._make_chunk(["https://src.example.org/f.dat"])
+        payload = build_payload(mapping, {}, _config(), RUN_ID, 0, 0)
+        assert "unmanaged_tokens" not in payload["params"]
 
     def test_storage_tokens_uses_correct_roles(self):
         mapping = self._make_chunk(["https://src.example.org/f.dat"])
