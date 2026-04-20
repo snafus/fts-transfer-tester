@@ -288,7 +288,7 @@ class TestBuildPayload:
         cfg = _config(storage_tokens=True)
         cfg["tokens"]["source_read"] = "source_role_tok"
         cfg["tokens"]["dest_write"] = "dest_role_tok"
-        payload = build_payload(mapping, cfg["tokens"], cfg, RUN_ID, 0, 0)
+        payload = build_payload(mapping, {}, cfg, RUN_ID, 0, 0)
         assert payload["params"]["source_token"] == "source_role_tok"
         assert payload["params"]["destination_token"] == "dest_role_tok"
 
