@@ -141,7 +141,7 @@ def build_payload(chunk_mapping, checksums, config, run_id, chunk_index, retry_r
 
     # unmanaged_tokens=True prevents FTS3 from registering these tokens with its
     # lifecycle manager — without it FTS3 still attempts token exchange/refresh.
-    if transfer_cfg.get("storage_tokens", False):
+    if transfer_cfg.get("unmanaged_tokens", False):
         payload["params"]["source_token"] = config["tokens"]["source_read"]
         payload["params"]["destination_token"] = config["tokens"]["dest_write"]
         payload["params"]["unmanaged_tokens"] = True

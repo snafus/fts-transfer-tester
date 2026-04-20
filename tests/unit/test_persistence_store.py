@@ -449,7 +449,7 @@ class TestWritePayload:
         # Payloads never contain tokens by design; verify the write itself
         assert "tok_submit_secret" not in raw
 
-    def test_storage_tokens_redacted_in_persisted_payload(self, tmp_path):
+    def test_unmanaged_tokens_redacted_in_persisted_payload(self, tmp_path):
         init_run_directory("r1", _config(), runs_dir=str(tmp_path))
         payload = {
             "files": [],
