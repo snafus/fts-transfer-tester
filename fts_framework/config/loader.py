@@ -469,7 +469,6 @@ def _validate_transfer(config):
             )
         )
 
-
 def _validate_concurrency(config):
     # type: (dict) -> None
     _require_int(

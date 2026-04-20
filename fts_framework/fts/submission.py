@@ -139,10 +139,8 @@ def build_payload(chunk_mapping, checksums, config, run_id, chunk_index, retry_r
     if overwrite:
         payload["params"]["overwrite"] = True
 
-    # Unmanaged token mode: pass storage tokens directly and set unmanaged_tokens
-    # so FTS3 does not register them with its token lifecycle manager (no
-    # token exchange or refresh attempts). Requires fts3.AllowNonManagedTokens
-    # on the FTS3 server.
+    # unmanaged_tokens=True prevents FTS3 from registering these tokens with its
+    # lifecycle manager — without it FTS3 still attempts token exchange/refresh.
     if transfer_cfg.get("storage_tokens", False):
         payload["params"]["source_token"] = config["tokens"]["source_read"]
         payload["params"]["destination_token"] = config["tokens"]["dest_write"]
