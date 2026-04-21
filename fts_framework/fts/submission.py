@@ -106,11 +106,19 @@ def build_payload(chunk_mapping, checksums, config, run_id, chunk_index, retry_r
     checksum_algo = transfer_cfg.get("checksum_algorithm", "adler32")
     verify_checksum = transfer_cfg.get("verify_checksum", "both")
 
+    activity_cfg = transfer_cfg.get("activity")
+    file_meta = {
+        "run_id": run_id,
+        "test_label": config["run"]["test_label"],
+        "activity": activity_cfg or "default",
+    }
+
     files = []
     for src, dst in chunk_mapping.items():
         entry = {
             "sources": [src],
             "destinations": [dst],
+            "file_metadata": file_meta,
         }
         if checksum_algo == "adler32" and src in checksums:
             # checksums[src] is "adler32:<hex>"; FTS3 expects this
@@ -128,11 +136,8 @@ def build_payload(chunk_mapping, checksums, config, run_id, chunk_index, retry_r
         },
     }
 
-    # Optional FTS3 activity string — empty string "default" is included;
-    # None means absent from config and is omitted from the payload.
-    activity = transfer_cfg.get("activity")
-    if activity:
-        payload["params"]["activity"] = activity
+    if activity_cfg:
+        payload["params"]["activity"] = activity_cfg
 
     # Optional overwrite
     overwrite = transfer_cfg.get("overwrite", False)

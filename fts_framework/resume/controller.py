@@ -259,7 +259,7 @@ def _scan_for_job(fts_client, run_id, chunk_index, retry_round, scan_window_s):
         jobs = fts_client.get(path)
     except TokenExpiredError:
         raise
-    except (req_lib.RequestException, Exception) as exc:
+    except Exception as exc:
         logger.warning("Pre-scan GET %s failed: %s — skipping scan", path, exc)
         return None
 

@@ -20,9 +20,6 @@ For each terminal ``SubjobRecord``:
 ``STAGING_UNSUPPORTED`` jobs are harvested normally; file records will carry
 ``file_state="STAGING"`` which the metrics engine counts as failed.
 
-Raw responses should be persisted before processing.  The persistence call is
-noted inline and will be wired in ``runner.py`` (Phase 8).
-
 Usage::
 
     from fts_framework.fts.collector import harvest_all
@@ -122,10 +119,6 @@ def _harvest_files(fts_client, job_id, chunk_index, retry_round):
     """
     raw = fts_client.get("/jobs/{}/files".format(job_id))
 
-    # NOTE: raw response should be persisted to
-    # runs/<run_id>/raw/files/<job_id>.json before processing.
-    # Wired in runner.py (Phase 8).
-
     if not isinstance(raw, list):
         logger.error(
             "GET /jobs/%s/files returned unexpected type %s — treating as empty",
@@ -215,9 +208,6 @@ def _harvest_retries(fts_client, job_id, file_id):
     """
     raw = fts_client.get("/jobs/{}/files/{}/retries".format(job_id, file_id))
 
-    # NOTE: persist to runs/<run_id>/raw/retries/<job_id>_<file_id>.json
-    # (Phase 8).
-
     if not isinstance(raw, list):
         logger.debug(
             "No retry records for job %s file %s (type=%s)",
@@ -262,8 +252,6 @@ def _harvest_dm(fts_client, job_id):
         # are supplementary and their absence must not abort the harvest.
         logger.debug("GET /jobs/%s/dm failed — treating DM records as empty", job_id)
         return []
-
-    # NOTE: persist to runs/<run_id>/raw/dm/<job_id>.json (Phase 8).
 
     if not isinstance(raw, list):
         return []

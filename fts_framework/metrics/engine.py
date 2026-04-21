@@ -289,6 +289,18 @@ def _compute_file_metrics(file_records):
 # Aggregate throughput
 # ---------------------------------------------------------------------------
 
+def _timed_files(finished_files):
+    # type: (list) -> list
+    """Return list of (file, start_dt, finish_dt) for files with valid timestamps."""
+    result = []
+    for f in finished_files:
+        s = _parse_iso(f.get("start_time") or "")
+        e = _parse_iso(f.get("finish_time") or "")
+        if s is not None and e is not None:
+            result.append((f, s, e))
+    return result
+
+
 def _campaign_times(finished_files):
     # type: (list) -> tuple
     """Return (campaign_start_iso, campaign_end_iso, wall_s) from file timestamps.
@@ -297,19 +309,12 @@ def _campaign_times(finished_files):
     campaign_end is the latest ``finish_time``.  Both are returned as ISO
     strings.  Returns ``(None, None, None)`` if no files have valid timestamps.
     """
-    timed = [
-        f for f in finished_files
-        if f.get("start_time") and f.get("finish_time")
-        and _parse_iso(f["start_time"]) is not None
-        and _parse_iso(f["finish_time"]) is not None
-    ]
+    timed = _timed_files(finished_files)
     if not timed:
         return None, None, None
 
-    start_dts = [_parse_iso(f["start_time"]) for f in timed]
-    finish_dts = [_parse_iso(f["finish_time"]) for f in timed]
-    campaign_start = min(start_dts)
-    campaign_end = max(finish_dts)
+    campaign_start = min(s for _, s, _ in timed)
+    campaign_end = max(e for _, _, e in timed)
     wall_s = (campaign_end - campaign_start).total_seconds()
     return (
         campaign_start.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -332,20 +337,12 @@ def _aggregate_throughput(finished_files):
     Returns:
         float or None: Bytes per second, or ``None`` if it cannot be computed.
     """
-    timed = [
-        f for f in finished_files
-        if f.get("start_time") and f.get("finish_time")
-        and _parse_iso(f["start_time"]) is not None
-        and _parse_iso(f["finish_time"]) is not None
-    ]
+    timed = _timed_files(finished_files)
     if not timed:
         return None
 
-    start_dts = [_parse_iso(f["start_time"]) for f in timed]
-    finish_dts = [_parse_iso(f["finish_time"]) for f in timed]
-
-    campaign_start = min(start_dts)
-    campaign_end = max(finish_dts)
+    campaign_start = min(s for _, s, _ in timed)
+    campaign_end = max(e for _, _, e in timed)
     wall_s = (campaign_end - campaign_start).total_seconds()
 
     if wall_s <= 0:
