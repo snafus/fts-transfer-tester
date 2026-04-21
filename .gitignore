@@ -38,3 +38,7 @@ runs/
 *.token
 *.pem
 *.key
+
+# Design prompt / scratch files
+claude.md
+reference.md
