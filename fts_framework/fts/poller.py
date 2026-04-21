@@ -97,7 +97,7 @@ def poll_to_completion(subjobs, fts_client, config):
         if time.time() > deadline:
             raise PollingTimeoutError(list(active.keys()))
 
-        logger.debug("Sleeping %ds before poll round %d", int(interval), poll_count + 1)
+        logger.info("Poll round %d: sleeping %ds", poll_count + 1, int(interval))
         time.sleep(interval)
         poll_count += 1
 
