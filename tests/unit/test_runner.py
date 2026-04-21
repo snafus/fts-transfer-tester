@@ -489,7 +489,7 @@ def _install_run_campaign_mocks(monkeypatch, tmp_path,
     # collector
     monkeypatch.setattr(
         "fts_framework.fts.collector.harvest_all",
-        lambda subjobs, client: (file_records, [], []),
+        lambda subjobs, client, run_id=None, runs_dir=None: (file_records, [], []),
     )
 
     # store.write_normalized
@@ -575,7 +575,7 @@ class TestRunCampaign:
         import fts_framework.fts.collector as collector_mod
 
         harvest_calls = [0]
-        def _fake_harvest(subjobs, client):
+        def _fake_harvest(subjobs, client, run_id=None, runs_dir=None):
             harvest_calls[0] += 1
             if harvest_calls[0] == 1:
                 return (file_records, [], [])
@@ -853,7 +853,7 @@ class TestRunCampaign:
 
         # Round 0 + round 1: FAILED; round 2: FINISHED
         harvest_calls = [0]
-        def fake_harvest(subjobs, client):
+        def fake_harvest(subjobs, client, run_id=None, runs_dir=None):
             harvest_calls[0] += 1
             if harvest_calls[0] <= 2:
                 return ([{"source_surl": "s1", "file_state": "FAILED"}], [], [])

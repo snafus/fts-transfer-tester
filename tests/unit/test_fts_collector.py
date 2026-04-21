@@ -4,6 +4,9 @@ Unit tests for fts_framework.fts.collector.
 FTSClient is replaced with a lightweight fake.
 """
 
+import json
+import os
+
 import pytest
 
 from fts_framework.fts.collector import (
@@ -406,3 +409,69 @@ class TestHarvestAll:
         )
         assert len(file_recs) == 1
         assert file_recs[0]["file_state"] == "STAGING"
+
+
+# ---------------------------------------------------------------------------
+# Raw persistence (raw-data-first invariant)
+# ---------------------------------------------------------------------------
+
+class TestRawPersistence:
+    def _setup_run_dir(self, tmp_path, run_id):
+        import fts_framework.persistence.store as store
+        store.init_run_directory(run_id, _minimal_config(), runs_dir=str(tmp_path))
+        return str(tmp_path)
+
+    def _client_for_job(self, file_items, retry_items_per_file, dm_items):
+        responses = [file_items]
+        for retries in retry_items_per_file:
+            responses.append(retries)
+        responses.append(dm_items)
+        return _FakeClient(responses)
+
+    def test_files_raw_written_before_normalisation(self, tmp_path):
+        run_id = "test-run-persist"
+        runs_dir = self._setup_run_dir(tmp_path, run_id)
+        raw_files = [_fts_file(file_id=1)]
+        client = self._client_for_job(raw_files, [[]], [])
+        harvest_all([_subjob("job-abc")], client, run_id=run_id, runs_dir=runs_dir)
+        path = os.path.join(runs_dir, run_id, "raw", "files", "job-abc.json")
+        assert os.path.isfile(path)
+        with open(path) as fh:
+            data = json.load(fh)
+        assert isinstance(data, list)
+        assert data[0]["file_id"] == 1
+
+    def test_retries_raw_written(self, tmp_path):
+        run_id = "test-run-retries"
+        runs_dir = self._setup_run_dir(tmp_path, run_id)
+        retry_item = {"attempt": 1, "datetime": "2026-01-01T00:00:00", "reason": "err",
+                      "transfer_host": "host"}
+        client = self._client_for_job([_fts_file(file_id=7)], [[retry_item]], [])
+        harvest_all([_subjob("job-xyz")], client, run_id=run_id, runs_dir=runs_dir)
+        path = os.path.join(runs_dir, run_id, "raw", "retries", "job-xyz_7.json")
+        assert os.path.isfile(path)
+        with open(path) as fh:
+            data = json.load(fh)
+        assert data[0]["attempt"] == 1
+
+    def test_dm_raw_written(self, tmp_path):
+        run_id = "test-run-dm"
+        runs_dir = self._setup_run_dir(tmp_path, run_id)
+        client = self._client_for_job([_fts_file(file_id=1)], [[]], [{"dm": "record"}])
+        harvest_all([_subjob("job-dm1")], client, run_id=run_id, runs_dir=runs_dir)
+        path = os.path.join(runs_dir, run_id, "raw", "dm", "job-dm1.json")
+        assert os.path.isfile(path)
+
+    def test_no_raw_written_without_run_id(self, tmp_path):
+        client = self._client_for_job([_fts_file(file_id=1)], [[]], [])
+        harvest_all([_subjob("job-1")], client)
+        assert not list(tmp_path.glob("**/*.json"))
+
+
+def _minimal_config():
+    return {
+        "run": {"test_label": "test", "run_id": None},
+        "fts": {"endpoint": "https://fts.example.org:8446", "ssl_verify": True},
+        "tokens": {"fts_submit": "t", "source_read": "t", "dest_write": "t"},
+        "transfer": {},
+    }

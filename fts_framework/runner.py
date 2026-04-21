@@ -365,7 +365,7 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
     # Step 8: Harvest file, retry, and DM records
     # -----------------------------------------------------------------------
     file_records, retry_records, dm_records = collector.harvest_all(
-        subjobs, fts_client,
+        subjobs, fts_client, run_id=run_id, runs_dir=runs_dir,
     )
     store.write_normalized(
         run_id, file_records, retry_records, dm_records, runs_dir=runs_dir,
@@ -415,7 +415,7 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
         all_subjobs.extend(retry_subjobs)
 
         new_file_records, new_retry_records, new_dm_records = collector.harvest_all(
-            retry_subjobs, fts_client,
+            retry_subjobs, fts_client, run_id=run_id, runs_dir=runs_dir,
         )
         file_records = _merge_file_records(file_records, new_file_records)
         retry_records = retry_records + new_retry_records
