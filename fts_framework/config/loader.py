@@ -79,6 +79,7 @@ _DEFAULTS = {
         "priority": 3,
         "activity": "default",
         "job_metadata": {},
+        "unmanaged_tokens": False,
     },
     "concurrency": {
         "want_digest_workers": 8,
@@ -460,6 +461,13 @@ def _validate_transfer(config):
     if max_files is not None:
         _require_int(max_files, "transfer.max_files", min_val=1)
 
+    unmanaged_tokens = config["transfer"]["unmanaged_tokens"]
+    if not isinstance(unmanaged_tokens, bool):
+        raise ConfigError(
+            "transfer.unmanaged_tokens must be a boolean (true/false), got {!r}".format(
+                unmanaged_tokens
+            )
+        )
 
 def _validate_concurrency(config):
     # type: (dict) -> None

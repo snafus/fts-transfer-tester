@@ -34,6 +34,7 @@ transfer:
   priority: 3                           # 1 (lowest) – 5 (highest)
   activity: "default"                   # FTS3 activity share label
   job_metadata: {}                      # user-supplied; merged with framework fields
+  unmanaged_tokens: false               # true = bypass FTS3 token lifecycle management (requires AllowNonManagedTokens on server)
 
 concurrency:
   want_digest_workers: 8                # parallel HEAD threads for checksum fetch
