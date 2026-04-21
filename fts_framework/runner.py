@@ -91,16 +91,16 @@ def _fts_monitor_base(endpoint):
     return ""
 
 
-def _log_optimizer_state(fts_client):
-    # type: (object) -> None
-    """Fetch and log the FTS3 link optimizer state.  Non-fatal on error."""
+def _fetch_optimizer_state(fts_client):
+    # type: (object) -> object
+    """Fetch the FTS3 link optimizer state.  Returns None on error."""
     try:
-        optimizer = fts_client.get("/optimizer/current")
-        logger.debug("FTS3 optimizer state at campaign start: %s", optimizer)
+        return fts_client.get("/optimizer/current")
     except TokenExpiredError:
         raise
     except Exception as exc:
         logger.warning("Could not fetch /optimizer/current: %s", exc)
+        return None
 
 
 def _submit_chunks(mapping, checksums, config, run_id, retry_round,
@@ -285,9 +285,9 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
         logger.warning("GET /whoami failed (continuing): %s", exc)
 
     # -----------------------------------------------------------------------
-    # Step 2: Log optimizer state
+    # Step 2: Fetch optimizer state (persisted to disk after run dir exists)
     # -----------------------------------------------------------------------
-    _log_optimizer_state(fts_client)
+    optimizer_state = _fetch_optimizer_state(fts_client)
 
     # -----------------------------------------------------------------------
     # Step 3: Resume or fresh run
@@ -368,6 +368,11 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
             mapping, checksums, config, run_id, 0, fts_client, runs_dir,
         )
         store.update_manifest(run_id, subjobs, runs_dir=runs_dir)
+
+    if optimizer_state is not None:
+        store.write_raw(run_id, "jobs", "optimizer.json", optimizer_state,
+                        runs_dir=runs_dir)
+        logger.info("Optimizer state written to raw/jobs/optimizer.json")
 
     # -----------------------------------------------------------------------
     # Step 6: Poll to terminal state

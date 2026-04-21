@@ -508,6 +508,12 @@ def _install_run_campaign_mocks(monkeypatch, tmp_path,
         lambda run_id, subjobs, runs_dir="runs": None,
     )
 
+    # store.write_raw (optimizer state + terminal job states both use this)
+    monkeypatch.setattr(
+        "fts_framework.persistence.store.write_raw",
+        lambda run_id, category, filename, data, runs_dir="runs": None,
+    )
+
     # poller
     monkeypatch.setattr(
         "fts_framework.fts.poller.poll_to_completion",
