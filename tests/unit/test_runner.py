@@ -277,6 +277,42 @@ class TestSubmitChunks:
         _submit_chunks(OrderedDict([("s", "d")]), {}, self._config(), "r", 0, _FakeClient([]), str(tmp_path))
         assert call_order == ["write", "submit"]
 
+    def test_submission_error_recorded_as_submission_failed(self, tmp_path, monkeypatch):
+        from fts_framework.exceptions import SubmissionError
+        def _failing_submit(client, payload, cfg, run_id, ci, rr):
+            raise SubmissionError(ci, 500, "no matching job found")
+        _patch_submit_internals(monkeypatch, submit_fn=_failing_submit)
+        from fts_framework.runner import _submit_chunks
+        result = _submit_chunks(
+            OrderedDict([("s", "d")]), {}, self._config(), "run-1", 0, _FakeClient([]), str(tmp_path)
+        )
+        assert len(result) == 1
+        assert result[0]["status"] == "SUBMISSION_FAILED"
+        assert result[0]["terminal"] is True
+        assert result[0]["job_id"] is None
+
+    def test_submission_error_does_not_abort_remaining_chunks(self, tmp_path, monkeypatch):
+        from fts_framework.exceptions import SubmissionError
+        call_count = [0]
+        def _mixed_submit(client, payload, cfg, run_id, ci, rr):
+            call_count[0] += 1
+            if ci == 0:
+                raise SubmissionError(ci, 500, "no matching job found")
+            return "job-{}".format(ci)
+        _patch_submit_internals(
+            monkeypatch,
+            chunks=lambda m, size=200: [OrderedDict([("s1", "d1")]), OrderedDict([("s2", "d2")])],
+            submit_fn=_mixed_submit,
+        )
+        from fts_framework.runner import _submit_chunks
+        result = _submit_chunks(
+            OrderedDict([("s1", "d1"), ("s2", "d2")]), {}, self._config(), "run-1", 0, _FakeClient([]), str(tmp_path)
+        )
+        assert len(result) == 2
+        assert result[0]["status"] == "SUBMISSION_FAILED"
+        assert result[1]["status"] == "SUBMITTED"
+        assert result[1]["job_id"] == "job-1"
+
 
 # ---------------------------------------------------------------------------
 # _persist_terminal_job_states

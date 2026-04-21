@@ -73,6 +73,13 @@ def harvest_all(subjobs, fts_client, run_id=None, runs_dir=None):
             )
             continue
 
+        if subjob.get("status") == "SUBMISSION_FAILED":
+            logger.debug(
+                "harvest_all: skipping SUBMISSION_FAILED chunk=%d (no job_id)",
+                subjob.get("chunk_index", -1),
+            )
+            continue
+
         job_id = subjob["job_id"]
         chunk_index = subjob.get("chunk_index", 0)
         retry_round = subjob.get("retry_round", 0)

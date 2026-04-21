@@ -410,6 +410,22 @@ class TestHarvestAll:
         assert len(file_recs) == 1
         assert file_recs[0]["file_state"] == "STAGING"
 
+    def test_submission_failed_subjob_skipped(self):
+        """SUBMISSION_FAILED entries have no job_id and must not attempt GET /jobs."""
+        client = _FakeClient([])
+        subjob = {
+            "job_id": None,
+            "chunk_index": 0,
+            "retry_round": 0,
+            "terminal": True,
+            "status": "SUBMISSION_FAILED",
+        }
+        file_recs, retry_recs, dm_recs = harvest_all([subjob], client)
+        assert file_recs == []
+        assert retry_recs == []
+        assert dm_recs == []
+        assert len(client.get_calls) == 0
+
 
 # ---------------------------------------------------------------------------
 # Raw persistence (raw-data-first invariant)

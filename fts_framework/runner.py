@@ -41,7 +41,7 @@ from collections import OrderedDict
 from datetime import datetime
 
 from fts_framework.checksum import fetcher as checksum_fetcher
-from fts_framework.exceptions import TokenExpiredError
+from fts_framework.exceptions import SubmissionError, TokenExpiredError
 from fts_framework.cleanup import manager as cleanup_manager
 from fts_framework.config import loader as config_loader
 from fts_framework.destination import planner as dest_planner
@@ -143,9 +143,29 @@ def _submit_chunks(mapping, checksums, config, run_id, retry_round,
             run_id, chunk_index, retry_round, payload, runs_dir=runs_dir,
         )
 
-        job_id = submit_with_500_recovery(
-            fts_client, payload, config, run_id, chunk_index, retry_round,
-        )
+        try:
+            job_id = submit_with_500_recovery(
+                fts_client, payload, config, run_id, chunk_index, retry_round,
+            )
+        except SubmissionError as exc:
+            logger.error(
+                "Chunk %d/%d submission failed (retry_round=%d): %s — "
+                "recording as SUBMISSION_FAILED and continuing",
+                chunk_index + 1, len(chunks), retry_round, exc,
+            )
+            subjobs.append({
+                "job_id": None,
+                "chunk_index": chunk_index,
+                "run_id": run_id,
+                "retry_round": retry_round,
+                "submitted_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "file_count": len(chunk_map),
+                "status": "SUBMISSION_FAILED",
+                "terminal": True,
+                "payload_path": payload_path,
+                "fts_monitor_url": "",
+            })
+            continue
 
         subjob = {
             "job_id": job_id,
