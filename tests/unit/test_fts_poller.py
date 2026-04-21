@@ -414,3 +414,28 @@ class TestBackoff:
             poll_to_completion([_subjob("job-1")], client, _config(campaign_timeout_s=0))
         # No poll should have been issued
         assert len(client.get_calls) == 0
+
+    def test_missing_job_state_key_retried(self, monkeypatch):
+        """W6: response missing job_state is treated as non-terminal (warning logged)."""
+        import fts_framework.fts.poller as mod
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+        # First response has no job_state; second is FINISHED
+        client = _FakeClient([
+            {"status": "200 OK"},
+            {"job_state": "FINISHED"},
+        ])
+        result = poll_to_completion([_subjob("job-1")], client, _config())
+        assert result[0]["status"] == "FINISHED"
+        assert len(client.get_calls) == 2
+
+    def test_non_dict_response_skipped(self, monkeypatch):
+        """W7: non-dict GET /jobs response is skipped with a warning."""
+        import fts_framework.fts.poller as mod
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+        client = _FakeClient([
+            ["unexpected", "list"],
+            {"job_state": "FINISHED"},
+        ])
+        result = poll_to_completion([_subjob("job-1")], client, _config())
+        assert result[0]["status"] == "FINISHED"
+        assert len(client.get_calls) == 2

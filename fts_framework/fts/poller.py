@@ -124,8 +124,23 @@ def poll_to_completion(subjobs, fts_client, config):
                 )
                 continue
 
+            if not isinstance(job_data, dict):
+                logger.warning(
+                    "GET /jobs/%s returned unexpected type %s — skipping this round",
+                    job_id, type(job_data).__name__,
+                )
+                continue
+
             job_state = job_data.get("job_state", "")
             logger.debug("job_id=%s state=%s (poll %d)", job_id, job_state, poll_count)
+
+            if not job_state:
+                logger.warning(
+                    "GET /jobs/%s returned no job_state (response keys: %s) — "
+                    "treating as non-terminal; will retry next round",
+                    job_id, list(job_data.keys()),
+                )
+                continue
 
             if job_state in TERMINAL_STATES:
                 active[job_id]["status"] = job_state
