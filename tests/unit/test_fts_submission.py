@@ -163,6 +163,15 @@ class TestBuildJobMetadata:
         assert meta["chunk_index"] == 0
         assert meta["retry_round"] == 0
         assert meta["test_label"] == "campaign_test"
+        assert meta["activity"] == "default"
+
+    def test_activity_propagated_to_job_metadata(self):
+        meta = _build_job_metadata(_config(), RUN_ID, 0, 0, activity="benchmark")
+        assert meta["activity"] == "benchmark"
+
+    def test_activity_defaults_to_default_string(self):
+        meta = _build_job_metadata(_config(), RUN_ID, 0, 0, activity=None)
+        assert meta["activity"] == "default"
 
     def test_user_metadata_merged(self):
         cfg = _config(job_metadata={"operator": "alice", "campaign": "perf"})
@@ -179,7 +188,7 @@ class TestBuildJobMetadata:
 
     def test_no_user_metadata(self):
         meta = _build_job_metadata(_config(job_metadata={}), RUN_ID, 0, 0)
-        assert set(meta.keys()) == {"run_id", "chunk_index", "retry_round", "test_label"}
+        assert set(meta.keys()) == {"run_id", "chunk_index", "retry_round", "test_label", "activity"}
 
     def test_chunk_index_and_retry_round_correct(self):
         meta = _build_job_metadata(_config(), RUN_ID, 7, 3)
@@ -265,11 +274,26 @@ class TestBuildPayload:
 
     def test_job_metadata_embedded(self):
         mapping = self._make_chunk(["https://src.example.org/f.dat"])
-        payload = build_payload(mapping, {}, _config(), RUN_ID, 3, 1)
+        payload = build_payload(mapping, {}, _config(activity="benchmark"), RUN_ID, 3, 1)
         meta = payload["params"]["job_metadata"]
         assert meta["run_id"] == RUN_ID
         assert meta["chunk_index"] == 3
         assert meta["retry_round"] == 1
+        assert meta["test_label"] == "campaign_test"
+        assert meta["activity"] == "benchmark"
+
+    def test_job_metadata_activity_consistent_with_file_metadata(self):
+        mapping = self._make_chunk(["https://src.example.org/f.dat"])
+        payload = build_payload(mapping, {}, _config(activity="perf"), RUN_ID, 0, 0)
+        job_activity = payload["params"]["job_metadata"]["activity"]
+        file_activity = payload["files"][0]["file_metadata"]["activity"]
+        assert job_activity == file_activity == "perf"
+
+    def test_job_metadata_activity_default_consistent(self):
+        mapping = self._make_chunk(["https://src.example.org/f.dat"])
+        payload = build_payload(mapping, {}, _config(activity=None), RUN_ID, 0, 0)
+        assert payload["params"]["job_metadata"]["activity"] == "default"
+        assert payload["files"][0]["file_metadata"]["activity"] == "default"
 
     def test_file_metadata_present_on_every_file(self):
         srcs = ["https://src.example.org/f{}.dat".format(i) for i in range(3)]

@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 # Framework metadata keys reserved in job_metadata.  User-supplied
 # job_metadata keys must not collide with these.
 _FRAMEWORK_METADATA_KEYS = frozenset([
-    "run_id", "chunk_index", "retry_round", "test_label",
+    "run_id", "chunk_index", "retry_round", "test_label", "activity",
 ])
 
 # Seconds to wait after a 500 before scanning for the job.
@@ -132,7 +132,8 @@ def build_payload(chunk_mapping, checksums, config, run_id, chunk_index, retry_r
             "verify_checksum": verify_checksum,
             "retry": retry_cfg.get("fts_retry_max", 2),
             "priority": transfer_cfg.get("priority", 3),
-            "job_metadata": _build_job_metadata(config, run_id, chunk_index, retry_round),
+            "job_metadata": _build_job_metadata(config, run_id, chunk_index, retry_round,
+                                             activity_cfg),
         },
     }
 
@@ -158,12 +159,12 @@ def build_payload(chunk_mapping, checksums, config, run_id, chunk_index, retry_r
     return payload
 
 
-def _build_job_metadata(config, run_id, chunk_index, retry_round):
-    # type: (dict, str, int, int) -> dict
+def _build_job_metadata(config, run_id, chunk_index, retry_round, activity=None):
+    # type: (dict, str, int, int, object) -> dict
     """Return the ``job_metadata`` dict for a chunk submission.
 
     Framework keys (``run_id``, ``chunk_index``, ``retry_round``,
-    ``test_label``) are always present.  User-supplied
+    ``test_label``, ``activity``) are always present.  User-supplied
     ``config["transfer"]["job_metadata"]`` values are merged in, with framework
     keys taking priority.
 
@@ -196,6 +197,7 @@ def _build_job_metadata(config, run_id, chunk_index, retry_round):
     metadata["chunk_index"] = chunk_index
     metadata["retry_round"] = retry_round
     metadata["test_label"] = config["run"]["test_label"]
+    metadata["activity"] = activity or "default"
 
     return metadata
 
