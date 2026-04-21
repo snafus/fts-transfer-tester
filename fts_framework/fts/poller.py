@@ -127,10 +127,6 @@ def poll_to_completion(subjobs, fts_client, config):
             job_state = job_data.get("job_state", "")
             logger.debug("job_id=%s state=%s (poll %d)", job_id, job_state, poll_count)
 
-            # NOTE: raw job poll response should be persisted here
-            # (runs/<run_id>/raw/jobs/<job_id>_poll_<N>.json).
-            # Wired in runner.py (Phase 8) once persistence.store is available.
-
             if job_state in TERMINAL_STATES:
                 active[job_id]["status"] = job_state
                 active[job_id]["terminal"] = True

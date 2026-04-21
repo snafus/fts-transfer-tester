@@ -271,6 +271,34 @@ class TestBuildPayload:
         assert meta["chunk_index"] == 3
         assert meta["retry_round"] == 1
 
+    def test_file_metadata_present_on_every_file(self):
+        srcs = ["https://src.example.org/f{}.dat".format(i) for i in range(3)]
+        mapping = self._make_chunk(srcs)
+        payload = build_payload(mapping, {}, _config(), RUN_ID, 0, 0)
+        for entry in payload["files"]:
+            assert "file_metadata" in entry
+
+    def test_file_metadata_contains_run_id(self):
+        mapping = self._make_chunk(["https://src.example.org/f.dat"])
+        payload = build_payload(mapping, {}, _config(), RUN_ID, 0, 0)
+        assert payload["files"][0]["file_metadata"]["run_id"] == RUN_ID
+
+    def test_file_metadata_contains_test_label(self):
+        mapping = self._make_chunk(["https://src.example.org/f.dat"])
+        payload = build_payload(mapping, {}, _config(), RUN_ID, 0, 0)
+        assert payload["files"][0]["file_metadata"]["test_label"] == "campaign_test"
+
+    def test_file_metadata_activity_matches_params(self):
+        mapping = self._make_chunk(["https://src.example.org/f.dat"])
+        payload = build_payload(mapping, {}, _config(activity="benchmark"), RUN_ID, 0, 0)
+        assert payload["files"][0]["file_metadata"]["activity"] == "benchmark"
+        assert payload["params"]["activity"] == "benchmark"
+
+    def test_file_metadata_activity_default_when_not_set(self):
+        mapping = self._make_chunk(["https://src.example.org/f.dat"])
+        payload = build_payload(mapping, {}, _config(activity=None), RUN_ID, 0, 0)
+        assert payload["files"][0]["file_metadata"]["activity"] == "default"
+
     def test_unmanaged_tokens_absent_by_default(self):
         mapping = self._make_chunk(["https://src.example.org/f.dat"])
         payload = build_payload(mapping, {}, _config(), RUN_ID, 0, 0)

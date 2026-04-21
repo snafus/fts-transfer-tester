@@ -20,9 +20,6 @@ For each terminal ``SubjobRecord``:
 ``STAGING_UNSUPPORTED`` jobs are harvested normally; file records will carry
 ``file_state="STAGING"`` which the metrics engine counts as failed.
 
-Raw responses should be persisted before processing.  The persistence call is
-noted inline and will be wired in ``runner.py`` (Phase 8).
-
 Usage::
 
     from fts_framework.fts.collector import harvest_all
@@ -34,12 +31,13 @@ import logging
 import requests as req_lib
 
 from fts_framework.exceptions import TokenExpiredError
+from fts_framework.persistence import store
 
 logger = logging.getLogger(__name__)
 
 
-def harvest_all(subjobs, fts_client):
-    # type: (list, object) -> tuple
+def harvest_all(subjobs, fts_client, run_id=None, runs_dir=None):
+    # type: (list, object, object, object) -> tuple
     """Harvest file, retry, and DM records for all terminal *subjobs*.
 
     Non-terminal subjobs (``terminal=False``) are skipped with a warning.
@@ -49,6 +47,10 @@ def harvest_all(subjobs, fts_client):
             have ``job_id``, ``chunk_index``, ``retry_round``, and
             ``terminal``.
         fts_client: ``FTSClient`` instance.
+        run_id (str): Run identifier; when provided, raw REST responses are
+            written to ``raw/files/``, ``raw/retries/``, and ``raw/dm/``
+            before processing (raw-data-first invariant).
+        runs_dir (str): Base directory for run outputs.
 
     Returns:
         tuple: ``(file_records, retry_records, dm_records)`` where each
@@ -83,7 +85,9 @@ def harvest_all(subjobs, fts_client):
         # -------------------------------------------------------------------
         # 1. File records (authoritative for all metrics)
         # -------------------------------------------------------------------
-        file_records = _harvest_files(fts_client, job_id, chunk_index, retry_round)
+        file_records = _harvest_files(
+            fts_client, job_id, chunk_index, retry_round, run_id, runs_dir,
+        )
         all_file_records.extend(file_records)
 
         # -------------------------------------------------------------------
@@ -91,13 +95,13 @@ def harvest_all(subjobs, fts_client):
         # -------------------------------------------------------------------
         for fr in file_records:
             file_id = fr["file_id"]
-            retries = _harvest_retries(fts_client, job_id, file_id)
+            retries = _harvest_retries(fts_client, job_id, file_id, run_id, runs_dir)
             all_retry_records.extend(retries)
 
         # -------------------------------------------------------------------
         # 3. Data-management records
         # -------------------------------------------------------------------
-        dm_records = _harvest_dm(fts_client, job_id)
+        dm_records = _harvest_dm(fts_client, job_id, run_id, runs_dir)
         all_dm_records.extend(dm_records)
 
     logger.info(
@@ -107,8 +111,9 @@ def harvest_all(subjobs, fts_client):
     return all_file_records, all_retry_records, all_dm_records
 
 
-def _harvest_files(fts_client, job_id, chunk_index, retry_round):
-    # type: (object, str, int, int) -> list
+def _harvest_files(fts_client, job_id, chunk_index, retry_round,
+                   run_id=None, runs_dir=None):
+    # type: (object, str, int, int, object, object) -> list
     """Fetch and normalise file records for *job_id*.
 
     Args:
@@ -116,15 +121,17 @@ def _harvest_files(fts_client, job_id, chunk_index, retry_round):
         job_id (str): FTS3 job ID.
         chunk_index (int): Framework chunk index for provenance.
         retry_round (int): Framework retry round for provenance.
+        run_id (str): When provided, raw response is written to disk first.
+        runs_dir (str): Base directory for run outputs.
 
     Returns:
         list[dict]: Normalised ``FileRecord`` dicts.
     """
     raw = fts_client.get("/jobs/{}/files".format(job_id))
 
-    # NOTE: raw response should be persisted to
-    # runs/<run_id>/raw/files/<job_id>.json before processing.
-    # Wired in runner.py (Phase 8).
+    if run_id:
+        store.write_raw(run_id, "files", job_id + ".json", raw,
+                        runs_dir=runs_dir or store._DEFAULT_RUNS_DIR)
 
     if not isinstance(raw, list):
         logger.error(
@@ -201,22 +208,26 @@ def _normalise_file_record(item, job_id, chunk_index, retry_round):
     }
 
 
-def _harvest_retries(fts_client, job_id, file_id):
-    # type: (object, str, int) -> list
+def _harvest_retries(fts_client, job_id, file_id, run_id=None, runs_dir=None):
+    # type: (object, str, int, object, object) -> list
     """Fetch retry history for a single file.
 
     Args:
         fts_client: ``FTSClient`` instance.
         job_id (str): FTS3 job ID.
         file_id (int): FTS3 file ID.
+        run_id (str): When provided, raw response is written to disk first.
+        runs_dir (str): Base directory for run outputs.
 
     Returns:
         list[dict]: ``RetryRecord`` dicts (empty list if no retries).
     """
     raw = fts_client.get("/jobs/{}/files/{}/retries".format(job_id, file_id))
 
-    # NOTE: persist to runs/<run_id>/raw/retries/<job_id>_<file_id>.json
-    # (Phase 8).
+    if run_id:
+        filename = "{}_{}.json".format(job_id, file_id)
+        store.write_raw(run_id, "retries", filename, raw,
+                        runs_dir=runs_dir or store._DEFAULT_RUNS_DIR)
 
     if not isinstance(raw, list):
         logger.debug(
@@ -240,13 +251,15 @@ def _harvest_retries(fts_client, job_id, file_id):
     return records
 
 
-def _harvest_dm(fts_client, job_id):
-    # type: (object, str) -> list
+def _harvest_dm(fts_client, job_id, run_id=None, runs_dir=None):
+    # type: (object, str, object, object) -> list
     """Fetch data-management records for *job_id*.
 
     Args:
         fts_client: ``FTSClient`` instance.
         job_id (str): FTS3 job ID.
+        run_id (str): When provided, raw response is written to disk first.
+        runs_dir (str): Base directory for run outputs.
 
     Returns:
         list[dict]: Raw DM record dicts (pass-through; metrics engine is not
@@ -263,7 +276,9 @@ def _harvest_dm(fts_client, job_id):
         logger.debug("GET /jobs/%s/dm failed — treating DM records as empty", job_id)
         return []
 
-    # NOTE: persist to runs/<run_id>/raw/dm/<job_id>.json (Phase 8).
+    if run_id:
+        store.write_raw(run_id, "dm", job_id + ".json", raw,
+                        runs_dir=runs_dir or store._DEFAULT_RUNS_DIR)
 
     if not isinstance(raw, list):
         return []
