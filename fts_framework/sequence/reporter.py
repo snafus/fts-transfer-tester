@@ -18,6 +18,7 @@ import csv
 import json
 import os
 import statistics
+import sys
 
 from fts_framework.sequence.state import COMPLETED, FAILED
 
@@ -279,6 +280,99 @@ def _write_markdown(sequence_dir, rows, aggregates, state):
 
 
 # ---------------------------------------------------------------------------
+# Console summary
+# ---------------------------------------------------------------------------
+
+def _mv_str(agg, key):
+    # type: (dict, str) -> str
+    """Format mean ± stdev for an aggregate key, or '-' if absent."""
+    v  = agg.get(key + "_mean")
+    sd = agg.get(key + "_stddev")
+    if v is None:
+        return "-"
+    s = _fmt_val(key, v)
+    if sd is not None:
+        s += u" \u00b1 " + _fmt_val(key, sd)
+    return s
+
+
+def print_console_summary(sequence_dir, state, rows, aggregates):
+    # type: (str, dict, list, list) -> None
+    """Print a human-readable sequence summary table to stdout."""
+    n_cases   = len(state["cases"])
+    n_trials  = state["trials"]
+    total     = n_cases * n_trials
+    completed = sum(1 for r in rows if r["status"] == COMPLETED)
+    failed    = sum(1 for r in rows if r["status"] == FAILED)
+
+    out = sys.stdout
+
+    out.write("\n")
+    out.write("=" * 72 + "\n")
+    out.write("Sequence Summary\n")
+    out.write("=" * 72 + "\n")
+    seq_id = state["sequence_id"]
+    label  = state.get("sequence_label") or ""
+    out.write("ID:        {}{}\n".format(
+        seq_id, "  ({})".format(label) if label else "",
+    ))
+    out.write("Cases:     {}   Trials/case: {}   Total: {}   "
+              "Completed: {}   Failed: {}\n".format(
+                  n_cases, n_trials, total, completed, failed,
+              ))
+    out.write("\n")
+
+    if not aggregates:
+        out.write("(no data)\n")
+        out.write("\n")
+        return
+
+    param_keys = list(aggregates[0]["params"].keys()) if aggregates else []
+
+    # Column definitions: (header, value_fn)
+    columns = []
+    columns.append(("Case", lambda agg: str(agg["case_index"])))
+    for pk in param_keys:
+        columns.append((pk, lambda agg, _pk=pk: str(agg["params"].get(_pk, "-"))))
+    columns.append(("Trials",
+                    lambda agg: "{}/{}".format(agg["n_completed"], agg["n_total"])))
+    columns.append(("Succ Rate",
+                    lambda agg: _mv_str(agg, "success_rate")))
+    columns.append(("Agg TP MB/s",
+                    lambda agg: _mv_str(agg, "aggregate_throughput_bytes_per_s")))
+    columns.append(("Mean MB/s",
+                    lambda agg: _mv_str(agg, "throughput_mean")))
+    columns.append(("p50 MB/s",
+                    lambda agg: _mv_str(agg, "throughput_p50")))
+    columns.append(("p90 MB/s",
+                    lambda agg: _mv_str(agg, "throughput_p90")))
+    columns.append(("Wall (s)",
+                    lambda agg: _mv_str(agg, "campaign_wall_s")))
+
+    # Compute column widths
+    widths = [len(hdr) for hdr, _ in columns]
+    cell_rows = []
+    for agg in aggregates:
+        cells = [fn(agg) for _, fn in columns]
+        cell_rows.append(cells)
+        for i, cell in enumerate(cells):
+            widths[i] = max(widths[i], len(cell))
+
+    sep   = "  "
+    hdr   = sep.join(h.ljust(widths[i]) for i, (h, _) in enumerate(columns))
+    ruler = sep.join("-" * widths[i] for i in range(len(columns)))
+
+    out.write(hdr + "\n")
+    out.write(ruler + "\n")
+    for cells in cell_rows:
+        out.write(sep.join(c.ljust(widths[i]) for i, c in enumerate(cells)) + "\n")
+
+    out.write("\n")
+    out.write("Reports: {}\n".format(os.path.join(sequence_dir, "reports")))
+    out.write("\n")
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -303,3 +397,4 @@ def generate_summary(sequence_dir, state, runs_dir="runs"):
     _write_json(sequence_dir, rows, aggregates, state)
     _write_csv(sequence_dir, rows)
     _write_markdown(sequence_dir, rows, aggregates, state)
+    print_console_summary(sequence_dir, state, rows, aggregates)

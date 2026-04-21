@@ -439,3 +439,132 @@ class TestBackoff:
         result = poll_to_completion([_subjob("job-1")], client, _config())
         assert result[0]["status"] == "FINISHED"
         assert len(client.get_calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# Stuck-ACTIVE detection
+# ---------------------------------------------------------------------------
+
+def _config_with_stuck(stuck_active_check_rounds=2, **kwargs):
+    """Config with stuck_active_check_rounds set (default 2 for fast tests)."""
+    cfg = _config(**kwargs)
+    cfg["polling"]["stuck_active_check_rounds"] = stuck_active_check_rounds
+    return cfg
+
+
+def _all_finished_files():
+    return [
+        {"file_state": "FINISHED"},
+        {"file_state": "FINISHED"},
+    ]
+
+
+class TestStuckActive:
+    def test_stuck_active_all_files_finished_derives_finished(self, monkeypatch):
+        """After stuck_active_check_rounds non-terminal rounds, all-FINISHED files → FINISHED."""
+        import fts_framework.fts.poller as mod
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+        # 2 ACTIVE rounds, then file check triggered, then derived FINISHED
+        client = _FakeClient([
+            {"job_state": "ACTIVE"},       # round 1
+            {"job_state": "ACTIVE"},       # round 2 → triggers check
+            _all_finished_files(),         # GET /jobs/job-1/files
+        ])
+        result = poll_to_completion([_subjob("job-1")], client, _config_with_stuck(2))
+        assert result[0]["status"] == "FINISHED"
+        assert result[0]["terminal"] is True
+
+    def test_stuck_active_all_files_failed_derives_failed(self, monkeypatch):
+        import fts_framework.fts.poller as mod
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+        client = _FakeClient([
+            {"job_state": "ACTIVE"},
+            {"job_state": "ACTIVE"},
+            [{"file_state": "FAILED"}, {"file_state": "FAILED"}],
+        ])
+        result = poll_to_completion([_subjob("job-1")], client, _config_with_stuck(2))
+        assert result[0]["status"] == "FAILED"
+        assert result[0]["terminal"] is True
+
+    def test_stuck_active_mixed_files_derives_finisheddirty(self, monkeypatch):
+        import fts_framework.fts.poller as mod
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+        client = _FakeClient([
+            {"job_state": "ACTIVE"},
+            {"job_state": "ACTIVE"},
+            [{"file_state": "FINISHED"}, {"file_state": "FAILED"}],
+        ])
+        result = poll_to_completion([_subjob("job-1")], client, _config_with_stuck(2))
+        assert result[0]["status"] == "FINISHEDDIRTY"
+        assert result[0]["terminal"] is True
+
+    def test_stuck_active_not_yet_terminal_files_does_not_resolve(self, monkeypatch):
+        """If file check shows non-terminal files, polling continues normally."""
+        import fts_framework.fts.poller as mod
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+        client = _FakeClient([
+            {"job_state": "ACTIVE"},
+            {"job_state": "ACTIVE"},
+            # file check: one file still ACTIVE
+            [{"file_state": "ACTIVE"}, {"file_state": "FINISHED"}],
+            {"job_state": "FINISHED"},   # job eventually finishes normally
+        ])
+        result = poll_to_completion([_subjob("job-1")], client, _config_with_stuck(2))
+        assert result[0]["status"] == "FINISHED"
+
+    def test_stuck_active_disabled_when_zero(self, monkeypatch):
+        """stuck_active_check_rounds=0 disables the feature entirely."""
+        import fts_framework.fts.poller as mod
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+        client = _FakeClient([
+            {"job_state": "ACTIVE"},
+            {"job_state": "ACTIVE"},
+            {"job_state": "ACTIVE"},
+            {"job_state": "FINISHED"},
+        ])
+        result = poll_to_completion([_subjob("job-1")], client, _config_with_stuck(0))
+        assert result[0]["status"] == "FINISHED"
+        # No /files call should have been made
+        assert all("/files" not in p for p in client.get_calls)
+
+    def test_stuck_active_not_triggered_before_threshold(self, monkeypatch):
+        """File check is only done at multiples of stuck_active_check_rounds."""
+        import fts_framework.fts.poller as mod
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+        # 3 rounds, threshold=5 — file check never triggered
+        client = _FakeClient([
+            {"job_state": "ACTIVE"},
+            {"job_state": "ACTIVE"},
+            {"job_state": "ACTIVE"},
+            {"job_state": "FINISHED"},
+        ])
+        result = poll_to_completion([_subjob("job-1")], client, _config_with_stuck(5))
+        assert result[0]["status"] == "FINISHED"
+        assert all("/files" not in p for p in client.get_calls)
+
+    def test_stuck_active_file_fetch_failure_retried(self, monkeypatch):
+        """If GET /jobs/{id}/files raises, the check is skipped and polling continues."""
+        import fts_framework.fts.poller as mod
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+        client = _FakeClient([
+            {"job_state": "ACTIVE"},
+            {"job_state": "ACTIVE"},
+            # file check fails
+            requests.ConnectionError("timeout"),
+            {"job_state": "FINISHED"},
+        ])
+        result = poll_to_completion([_subjob("job-1")], client, _config_with_stuck(2))
+        assert result[0]["status"] == "FINISHED"
+
+    def test_stuck_active_not_used_files_only_derives_finished(self, monkeypatch):
+        """Files all NOT_USED (no meaningful transfers) → FINISHED."""
+        import fts_framework.fts.poller as mod
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+        client = _FakeClient([
+            {"job_state": "ACTIVE"},
+            {"job_state": "ACTIVE"},
+            [{"file_state": "NOT_USED"}, {"file_state": "NOT_USED"}],
+        ])
+        result = poll_to_completion([_subjob("job-1")], client, _config_with_stuck(2))
+        assert result[0]["status"] == "FINISHED"
+        assert result[0]["terminal"] is True

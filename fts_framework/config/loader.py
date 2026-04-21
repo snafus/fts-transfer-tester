@@ -92,6 +92,7 @@ _DEFAULTS = {
         "backoff_multiplier": 1.5,
         "max_interval_s": 300,
         "campaign_timeout_s": 86400,
+        "stuck_active_check_rounds": 10,
     },
     "cleanup": {
         "before": False,
@@ -510,6 +511,12 @@ def _validate_polling(config):
         raise ConfigError(
             "polling.backoff_multiplier must be >= 1.0, got {!r}".format(backoff)
         )
+
+    _require_int(
+        polling["stuck_active_check_rounds"],
+        "polling.stuck_active_check_rounds",
+        min_val=0,
+    )
 
 
 def _validate_retry(config):

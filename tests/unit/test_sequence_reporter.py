@@ -292,3 +292,83 @@ class TestAggregation:
                 data = json.load(fh)
         agg = data["cases"][0]
         assert agg["throughput_mean_mean"] is None
+
+
+# ---------------------------------------------------------------------------
+# Console summary
+# ---------------------------------------------------------------------------
+
+class TestConsoleSummary:
+    def _run(self, state, rows=None, aggregates=None, capsys=None, tmp=None):
+        from fts_framework.sequence import reporter as mod
+        if rows is None:
+            rows = mod._collect_rows(state, tmp or "")
+        if aggregates is None:
+            aggregates = mod._aggregate_cases(state, rows)
+        seq_dir = tmp or ""
+        mod.print_console_summary(seq_dir, state, rows, aggregates)
+        if capsys:
+            return capsys.readouterr().out
+        return ""
+
+    def test_sequence_id_in_output(self, capsys):
+        state = _make_state()
+        out = self._run(state, capsys=capsys)
+        assert "test_seq_001" in out
+
+    def test_completed_count_shown(self, capsys):
+        with tempfile.TemporaryDirectory() as tmp:
+            runs_dir = os.path.join(tmp, "runs")
+            os.makedirs(runs_dir)
+            state = _make_state(n_cases=2, trials=2)
+            _mark_completed_inmem(state, 0, 0, "run_a")
+            _mark_completed_inmem(state, 0, 1, "run_b")
+            _write_snapshot(runs_dir, "run_a", _default_snapshot())
+            _write_snapshot(runs_dir, "run_b", _default_snapshot())
+            from fts_framework.sequence import reporter as mod
+            rows = mod._collect_rows(state, runs_dir)
+            aggregates = mod._aggregate_cases(state, rows)
+            mod.print_console_summary(tmp, state, rows, aggregates)
+            out = capsys.readouterr().out
+        assert "Completed: 2" in out
+        assert "Failed: 0" in out
+
+    def test_column_headers_shown(self, capsys):
+        state = _make_state()
+        out = self._run(state, capsys=capsys)
+        assert "Succ Rate" in out
+        assert "Agg TP MB/s" in out
+        assert "Wall (s)" in out
+
+    def test_param_column_shown(self, capsys):
+        state = _make_state()
+        out = self._run(state, capsys=capsys)
+        assert "transfer.max_files" in out
+
+    def test_metric_values_shown_when_data_present(self, capsys):
+        with tempfile.TemporaryDirectory() as tmp:
+            runs_dir = os.path.join(tmp, "runs")
+            os.makedirs(runs_dir)
+            state = _make_state(n_cases=1, trials=1)
+            _mark_completed_inmem(state, 0, 0, "run_x")
+            _write_snapshot(runs_dir, "run_x", _default_snapshot(
+                throughput_mean=100e6, success_rate=1.0,
+            ))
+            from fts_framework.sequence import reporter as mod
+            rows = mod._collect_rows(state, runs_dir)
+            aggregates = mod._aggregate_cases(state, rows)
+            mod.print_console_summary(tmp, state, rows, aggregates)
+            out = capsys.readouterr().out
+        assert "100.00" in out   # throughput_mean in MB/s
+        assert "100.0%" in out   # success_rate
+
+    def test_no_data_does_not_crash(self, capsys):
+        state = _make_state(n_cases=1, trials=1)  # all PENDING — no snapshots
+        out = self._run(state, capsys=capsys)
+        assert "test_seq_001" in out
+
+    def test_reports_path_shown(self, capsys):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = _make_state()
+            out = self._run(state, capsys=capsys, tmp=tmp)
+            assert "reports" in out

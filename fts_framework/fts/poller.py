@@ -41,6 +41,53 @@ logger = logging.getLogger(__name__)
 # All FTS3 job states that end the polling loop for a given job.
 TERMINAL_STATES = frozenset(["FINISHED", "FAILED", "FINISHEDDIRTY", "CANCELED"])
 
+# FTS3 file-level states considered terminal for stuck-ACTIVE detection.
+_FILE_TERMINAL_STATES = frozenset(["FINISHED", "FAILED", "CANCELED", "NOT_USED"])
+
+
+def _derive_state_from_files(fts_client, job_id):
+    # type: (object, str) -> object
+    """Fetch file records for *job_id* and derive effective terminal state.
+
+    Returns a terminal state string (``"FINISHED"``, ``"FAILED"``,
+    ``"CANCELED"``, or ``"FINISHEDDIRTY"``) if all files are in terminal
+    states, or ``None`` if any file is still non-terminal or the request
+    fails.
+    """
+    try:
+        files = fts_client.get("/jobs/{}/files".format(job_id))
+    except Exception as exc:
+        logger.warning(
+            "stuck-ACTIVE check: GET /jobs/%s/files failed: %s — will retry next check",
+            job_id, exc,
+        )
+        return None
+
+    if not isinstance(files, list) or not files:
+        logger.warning(
+            "stuck-ACTIVE check: unexpected response type %s for job %s",
+            type(files).__name__, job_id,
+        )
+        return None
+
+    for f in files:
+        if f.get("file_state", "") not in _FILE_TERMINAL_STATES:
+            return None  # at least one file still active
+
+    # Derive effective job state from meaningful files (exclude NOT_USED)
+    meaningful = [f for f in files if f.get("file_state") != "NOT_USED"]
+    if not meaningful:
+        return "FINISHED"
+
+    states = set(f.get("file_state") for f in meaningful)
+    if states == {"FINISHED"}:
+        return "FINISHED"
+    if states == {"FAILED"}:
+        return "FAILED"
+    if states == {"CANCELED"}:
+        return "CANCELED"
+    return "FINISHEDDIRTY"
+
 
 def poll_to_completion(subjobs, fts_client, config):
     # type: (list, object, dict) -> list
@@ -72,6 +119,7 @@ def poll_to_completion(subjobs, fts_client, config):
     backoff_multiplier = float(poll_cfg["backoff_multiplier"])
     max_interval = float(poll_cfg["max_interval_s"])
     campaign_timeout_s = poll_cfg["campaign_timeout_s"]
+    stuck_active_check_rounds = poll_cfg.get("stuck_active_check_rounds", 10)
 
     deadline = time.time() + campaign_timeout_s
 
@@ -92,6 +140,8 @@ def poll_to_completion(subjobs, fts_client, config):
     )
 
     poll_count = 0
+    # Counts consecutive non-terminal poll rounds per job_id (for stuck detection).
+    _nonterminal_rounds = {}
 
     while active:
         if time.time() > deadline:
@@ -166,6 +216,25 @@ def poll_to_completion(subjobs, fts_client, config):
 
             else:
                 logger.debug("Job %s still in non-terminal state %s", job_id, job_state)
+                if stuck_active_check_rounds > 0:
+                    _nonterminal_rounds[job_id] = _nonterminal_rounds.get(job_id, 0) + 1
+                    if _nonterminal_rounds[job_id] % stuck_active_check_rounds == 0:
+                        logger.info(
+                            "Job %s has been non-terminal for %d rounds "
+                            "— checking file-level states",
+                            job_id, _nonterminal_rounds[job_id],
+                        )
+                        derived = _derive_state_from_files(fts_client, job_id)
+                        if derived is not None:
+                            logger.warning(
+                                "Job %s stuck in %s but all files terminal "
+                                "— using derived state %s (non-terminal rounds: %d)",
+                                job_id, job_state, derived,
+                                _nonterminal_rounds[job_id],
+                            )
+                            active[job_id]["status"] = derived
+                            active[job_id]["terminal"] = True
+                            del active[job_id]
 
         # Back off for next round, capped at max_interval
         interval = min(interval * backoff_multiplier, max_interval)
