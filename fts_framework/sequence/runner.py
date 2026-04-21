@@ -137,6 +137,7 @@ def run_sequence(params_file, resume_dir=None, runs_dir=None,
 
     for case_index, trial_index in pending:
         case        = state["cases"][case_index]
+        trial       = case["trials"][trial_index]
         case_params = case["params"]
         n_cases     = len(state["cases"])
         n_trials    = state["trials"]
@@ -150,9 +151,18 @@ def run_sequence(params_file, resume_dir=None, runs_dir=None,
 
         trial_config = _build_trial_config(baseline_config, case_params)
 
-        # Generate run_id upfront so it can be recorded in state before the
-        # campaign starts (enables crash detection on resume).
-        run_id = generate_run_id()
+        # For RUNNING trials (process was interrupted mid-campaign), reuse the
+        # stored run_id so run_campaign() can resume the partial run via its
+        # internal resume logic.  For PENDING trials, generate a fresh run_id.
+        existing_run_id = trial.get("run_id")
+        if trial["status"] == seq_state.RUNNING and existing_run_id:
+            run_id = existing_run_id
+            logger.info(
+                "Resuming interrupted trial (case=%d trial=%d run_id=%s)",
+                case_index, trial_index, run_id,
+            )
+        else:
+            run_id = generate_run_id()
         trial_config["run"]["run_id"] = run_id
 
         seq_state.mark_running(
