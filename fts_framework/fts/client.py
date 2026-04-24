@@ -246,3 +246,26 @@ class FTSClient(object):
         resp = self.request("POST", path, json=payload, **kwargs)
         logger.debug("POST %s → HTTP %d", path, resp.status_code)
         return resp
+
+    def delete(self, path, **kwargs):
+        # type: (str, ...) -> req_lib.Response
+        """DELETE *path* and return the raw response.
+
+        The caller inspects the status code; ``delete()`` does not raise on
+        non-2xx (except 401) so the cancellation layer can handle 404 (already
+        terminal) gracefully.
+
+        Args:
+            path (str): API path.
+            **kwargs: Additional keyword arguments for ``session.request()``.
+
+        Returns:
+            requests.Response
+
+        Raises:
+            TokenExpiredError: On 401.
+            requests.RequestException: On connection failure.
+        """
+        resp = self.request("DELETE", path, **kwargs)
+        logger.debug("DELETE %s → HTTP %d", path, resp.status_code)
+        return resp
