@@ -358,6 +358,7 @@ def _resolve_oidc_tokens(config):
         id_var      = role_cfg.get("client_id_var") or ""
         secret_var  = role_cfg.get("client_secret_var") or ""
         scope       = role_cfg.get("scope") or ""
+        audience    = role_cfg.get("audience") or None
 
         client_id     = _env_loader.resolve_var(id_var, os.environ, env_file_vars) if id_var else None
         client_secret = _env_loader.resolve_var(secret_var, os.environ, env_file_vars) if secret_var else None
@@ -376,7 +377,9 @@ def _resolve_oidc_tokens(config):
             )
 
         logger.info("Fetching OIDC token for role %r from %s", role, endpoint)
-        tokens[role] = _oidc.fetch_token(endpoint, client_id, client_secret, scope, ssl_verify)
+        tokens[role] = _oidc.fetch_token(
+            endpoint, client_id, client_secret, scope, ssl_verify, audience=audience
+        )
 
 
 def _validate(config):

@@ -70,6 +70,35 @@ def test_non_json_response_raises_config_error():
         fetch_token(_ENDPOINT, "cid", "csecret", "openid", True)
 
 
+@responses_lib.activate
+def test_audience_included_when_provided():
+    captured = []
+
+    def _cb(request):
+        captured.append(request.body)
+        return (200, {}, '{"access_token": "t"}')
+
+    responses_lib.add_callback(responses_lib.POST, _ENDPOINT, callback=_cb)
+    fetch_token(_ENDPOINT, "cid", "csecret", "openid", True,
+                audience="https://wlcg.cern.ch/jwt/v1/any")
+
+    assert "audience=https" in captured[0]
+
+
+@responses_lib.activate
+def test_audience_omitted_when_none():
+    captured = []
+
+    def _cb(request):
+        captured.append(request.body)
+        return (200, {}, '{"access_token": "t"}')
+
+    responses_lib.add_callback(responses_lib.POST, _ENDPOINT, callback=_cb)
+    fetch_token(_ENDPOINT, "cid", "csecret", "openid", True, audience=None)
+
+    assert "audience" not in captured[0]
+
+
 def test_connection_error_raises_config_error():
     import requests
     import responses as resp_mod
