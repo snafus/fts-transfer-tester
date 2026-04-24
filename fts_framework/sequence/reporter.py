@@ -72,6 +72,24 @@ def _fmt_val(key, val):
 # Data collection
 # ---------------------------------------------------------------------------
 
+def _load_job_ids(run_id, runs_dir):
+    # type: (str, str) -> list
+    """Load job IDs from ``manifest.json`` for *run_id*.  Returns empty list if absent."""
+    path = os.path.join(runs_dir, run_id, "manifest.json")
+    if not os.path.isfile(path):
+        return []
+    try:
+        with open(path, "r") as fh:
+            manifest = json.load(fh)
+        return [
+            s["job_id"]
+            for s in manifest.get("subjobs", [])
+            if s.get("job_id")
+        ]
+    except Exception:
+        return []
+
+
 def _load_snapshot(run_id, runs_dir):
     # type: (str, str) -> object
     """Load ``metrics/snapshot.json`` for *run_id*.  Returns None if absent."""
@@ -151,13 +169,9 @@ def _aggregate_cases(state, rows):
 # Report writers
 # ---------------------------------------------------------------------------
 
-def _write_runs_index(sequence_dir, rows):
-    # type: (str, list) -> None
-    """Write ``runs/index.json`` mapping each run directory to its case params.
-
-    Provides a human-readable lookup from run directory name to the parameter
-    set that produced it, without needing to open ``state.json``.
-    """
+def _write_runs_index(sequence_dir, rows, runs_dir):
+    # type: (str, list, str) -> None
+    """Write ``runs/index.json`` mapping each run directory to its case params and job IDs."""
     index = []
     for row in rows:
         run_id = row.get("run_id") or ""
@@ -170,9 +184,9 @@ def _write_runs_index(sequence_dir, rows):
             "status":      row["status"],
             "params":      {k[len("param_"):]: v
                             for k, v in row.items() if k.startswith("param_")},
+            "job_ids":     _load_job_ids(run_id, runs_dir),
         })
 
-    runs_dir = os.path.join(sequence_dir, "runs")
     if not os.path.isdir(runs_dir):
         os.makedirs(runs_dir)
     path = os.path.join(runs_dir, "index.json")
@@ -426,7 +440,7 @@ def generate_summary(sequence_dir, state, runs_dir="runs"):
     rows       = _collect_rows(state, runs_dir)
     aggregates = _aggregate_cases(state, rows)
 
-    _write_runs_index(sequence_dir, rows)
+    _write_runs_index(sequence_dir, rows, runs_dir)
     _write_json(sequence_dir, rows, aggregates, state)
     _write_csv(sequence_dir, rows)
     _write_markdown(sequence_dir, rows, aggregates, state)

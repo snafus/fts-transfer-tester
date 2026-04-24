@@ -301,14 +301,25 @@ class TestAggregation:
         assert agg["n_completed"] == 1
         assert agg["n_failed"]    == 1
 
+    def _write_manifest(self, runs_dir, run_id, job_ids):
+        """Write a minimal manifest.json with subjobs for the given job_ids."""
+        run_dir = os.path.join(runs_dir, run_id)
+        os.makedirs(run_dir, exist_ok=True)
+        manifest = {
+            "subjobs": [{"job_id": jid, "status": "FINISHED"} for jid in job_ids]
+        }
+        with open(os.path.join(run_dir, "manifest.json"), "w") as fh:
+            json.dump(manifest, fh)
+
     def test_runs_index_written(self):
         with tempfile.TemporaryDirectory() as tmp:
             runs_dir = os.path.join(tmp, "runs")
             os.makedirs(runs_dir)
             state = _make_state(n_cases=1, trials=1)
             _mark_completed_inmem(state, 0, 0, "c00_t00_run_abc")
+            self._write_manifest(runs_dir, "c00_t00_run_abc", ["job-001", "job-002"])
             seq_reporter.generate_summary(tmp, state, runs_dir=runs_dir)
-            index_path = os.path.join(tmp, "runs", "index.json")
+            index_path = os.path.join(runs_dir, "index.json")
             assert os.path.isfile(index_path)
             with open(index_path) as fh:
                 index = json.load(fh)
@@ -317,14 +328,29 @@ class TestAggregation:
         assert index[0]["case_index"] == 0
         assert index[0]["trial_index"] == 0
         assert "transfer.max_files" in index[0]["params"]
+        assert index[0]["job_ids"] == ["job-001", "job-002"]
+
+    def test_runs_index_job_ids_empty_when_no_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runs_dir = os.path.join(tmp, "runs")
+            os.makedirs(runs_dir)
+            state = _make_state(n_cases=1, trials=1)
+            _mark_completed_inmem(state, 0, 0, "c00_t00_run_abc")
+            # No manifest written
+            seq_reporter.generate_summary(tmp, state, runs_dir=runs_dir)
+            with open(os.path.join(runs_dir, "index.json")) as fh:
+                index = json.load(fh)
+        assert index[0]["job_ids"] == []
 
     def test_runs_index_excludes_entries_without_run_id(self):
         with tempfile.TemporaryDirectory() as tmp:
+            runs_dir = os.path.join(tmp, "runs")
+            os.makedirs(runs_dir)
             state = _make_state(n_cases=1, trials=2)
             _mark_completed_inmem(state, 0, 0, "c00_t00_run_abc")
             # trial 1 still pending — no run_id
-            seq_reporter.generate_summary(tmp, state, runs_dir=tmp)
-            with open(os.path.join(tmp, "runs", "index.json")) as fh:
+            seq_reporter.generate_summary(tmp, state, runs_dir=runs_dir)
+            with open(os.path.join(runs_dir, "index.json")) as fh:
                 index = json.load(fh)
         assert len(index) == 1
         assert index[0]["run_dir"] == "c00_t00_run_abc"
