@@ -78,7 +78,7 @@ def chunk(items, size=_MAX_CHUNK_SIZE):
 
 
 def build_payload(chunk_mapping, checksums, config, run_id, chunk_index, retry_round):
-    # type: (OrderedDict, dict, dict, str, int, int) -> dict
+    # type: (list, dict, dict, str, int, int) -> dict
     """Build the FTS3 ``POST /jobs`` request body for one chunk.
 
     Constructs the ``files`` list (one entry per source→destination pair) and
