@@ -42,8 +42,6 @@ import re
 import time
 from datetime import datetime
 
-import requests as req_lib
-
 from fts_framework.exceptions import SubmissionError, TokenExpiredError
 from fts_framework.persistence import store
 
