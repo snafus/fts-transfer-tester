@@ -7,7 +7,6 @@ at the HTTP layer (submission logic is what's under test, not HTTP mechanics).
 """
 
 import pytest
-from collections import OrderedDict
 
 from fts_framework.fts.submission import (
     chunk,
@@ -62,8 +61,8 @@ class _FakeClient(object):
 # ---------------------------------------------------------------------------
 
 def _mapping(*keys):
-    """Build an OrderedDict with integer values for simple tests."""
-    return OrderedDict((k, "dst://{}".format(k)) for k in keys)
+    """Build a list of (src, dst) pairs for simple chunk tests."""
+    return [(k, "dst://{}".format(k)) for k in keys]
 
 
 def _config(chunk_size=200, scan_window_s=300, fts_retry_max=2,
@@ -110,7 +109,7 @@ class TestChunk:
         m = _mapping("a", "b", "c")
         result = chunk(m, size=10)
         assert len(result) == 1
-        assert list(result[0].keys()) == ["a", "b", "c"]
+        assert [src for src, dst in result[0]] == ["a", "b", "c"]
 
     def test_exact_multiple(self):
         m = _mapping(*[str(i) for i in range(6)])
@@ -129,7 +128,7 @@ class TestChunk:
         keys = ["c", "a", "b"]
         m = _mapping(*keys)
         result = chunk(m, size=10)
-        assert list(result[0].keys()) == keys
+        assert [src for src, dst in result[0]] == keys
 
     def test_size_one(self):
         m = _mapping("x", "y", "z")
@@ -144,12 +143,12 @@ class TestChunk:
 
     def test_empty_items_raises(self):
         with pytest.raises(ValueError, match="empty"):
-            chunk(OrderedDict(), size=10)
+            chunk([], size=10)
 
-    def test_returns_list_of_ordered_dicts(self):
+    def test_returns_list_of_lists(self):
         result = chunk(_mapping("a", "b"), size=10)
         assert isinstance(result, list)
-        assert isinstance(result[0], OrderedDict)
+        assert isinstance(result[0], list)
 
 
 # ---------------------------------------------------------------------------
@@ -202,10 +201,10 @@ class TestBuildJobMetadata:
 
 class TestBuildPayload:
     def _make_chunk(self, srcs):
-        return OrderedDict(
+        return [
             (s, "https://dst.example.org/data/testfile_{:06d}".format(i))
             for i, s in enumerate(srcs)
-        )
+        ]
 
     def test_files_list_length(self):
         srcs = ["https://src.example.org/f{}.dat".format(i) for i in range(3)]
@@ -217,7 +216,7 @@ class TestBuildPayload:
     def test_sources_and_destinations(self):
         src = "https://src.example.org/file.dat"
         dst = "https://dst.example.org/data/testfile_000000"
-        mapping = OrderedDict([(src, dst)])
+        mapping = [(src, dst)]
         checksums = {src: "adler32:a1b2c3d4"}
         payload = build_payload(mapping, checksums, _config(), RUN_ID, 0, 0)
         entry = payload["files"][0]
@@ -226,14 +225,14 @@ class TestBuildPayload:
 
     def test_checksum_included(self):
         src = "https://src.example.org/file.dat"
-        mapping = OrderedDict([(src, "https://dst.example.org/testfile_000000")])
+        mapping = [(src, "https://dst.example.org/testfile_000000")]
         checksums = {src: "adler32:a1b2c3d4"}
         payload = build_payload(mapping, checksums, _config(), RUN_ID, 0, 0)
         assert payload["files"][0]["checksum"] == "adler32:a1b2c3d4"
 
     def test_checksum_missing_pfn_omitted(self):
         src = "https://src.example.org/file.dat"
-        mapping = OrderedDict([(src, "https://dst.example.org/testfile_000000")])
+        mapping = [(src, "https://dst.example.org/testfile_000000")]
         payload = build_payload(mapping, {}, _config(), RUN_ID, 0, 0)
         assert "checksum" not in payload["files"][0]
 

@@ -30,7 +30,6 @@ Usage::
 
 import logging
 import time
-from collections import OrderedDict
 
 from fts_framework.exceptions import SubmissionError
 
@@ -50,18 +49,18 @@ _MAX_CHUNK_SIZE = 200
 
 
 def chunk(items, size=_MAX_CHUNK_SIZE):
-    # type: (OrderedDict, int) -> list
-    """Split *items* into a list of ``OrderedDict`` chunks of at most *size*.
+    # type: (list, int) -> list
+    """Split *items* into sub-lists of at most *size* ``(src, dst)`` pairs.
 
     Iteration order is preserved.  The last chunk may be smaller than *size*.
 
     Args:
-        items (OrderedDict): Source→destination mapping as returned by
+        items (list): List of ``(src_pfn, dest_url)`` pairs as returned by
             ``destination.planner.plan()``.
         size (int): Maximum entries per chunk.  Must be >= 1.
 
     Returns:
-        list[OrderedDict]: Non-empty list of ``OrderedDict`` chunks.
+        list[list]: Non-empty list of chunk sub-lists.
 
     Raises:
         ValueError: If *size* < 1 or *items* is empty.
@@ -71,12 +70,9 @@ def chunk(items, size=_MAX_CHUNK_SIZE):
     if not items:
         raise ValueError("items must not be empty")
 
-    keys = list(items.keys())
     chunks = []
-    for i in range(0, len(keys), size):
-        batch_keys = keys[i:i + size]
-        batch = OrderedDict((k, items[k]) for k in batch_keys)
-        chunks.append(batch)
+    for i in range(0, len(items), size):
+        chunks.append(items[i:i + size])
     return chunks
 
 
@@ -88,7 +84,7 @@ def build_payload(chunk_mapping, checksums, config, run_id, chunk_index, retry_r
     attaches framework metadata, priorities, and FTS3 transfer parameters.
 
     Args:
-        chunk_mapping (OrderedDict): Source PFN → destination URL for this
+        chunk_mapping (list): List of ``(src_pfn, dest_url)`` pairs for this
             chunk only.
         checksums (dict): PFN → ``"adler32:<hex>"`` for all source PFNs.
             Only entries present in *chunk_mapping* are used.
@@ -117,7 +113,7 @@ def build_payload(chunk_mapping, checksums, config, run_id, chunk_index, retry_r
     dest_token   = config["tokens"].get("dest_write")
 
     files = []
-    for src, dst in chunk_mapping.items():
+    for src, dst in chunk_mapping:
         entry = {
             "sources": [src],
             "destinations": [dst],

@@ -24,15 +24,13 @@ Usage::
 import logging
 import os
 
-from collections import OrderedDict
-
 from fts_framework.exceptions import ConfigError
 
 logger = logging.getLogger(__name__)
 
 
 def plan(pfns, config):
-    # type: (list, dict) -> OrderedDict
+    # type: (list, dict) -> list
     """Compute and return the source→destination mapping for *pfns*.
 
     PFNs are sorted alphabetically to produce a stable, deterministic index.
@@ -40,13 +38,19 @@ def plan(pfns, config):
     destinations proportionally by weight.  Otherwise ``transfer.dst_prefix``
     is used for all files.
 
+    Duplicate PFNs in *pfns* are fully supported; each occurrence receives its
+    own destination URL with a unique index.
+
     Args:
         pfns (list[str]): Source PFN list as returned by ``inventory.loader``.
+            May contain duplicates (e.g. when sampling is used to pad to
+            ``max_files``).
         config (dict): Validated framework config dict.
 
     Returns:
-        OrderedDict[str, str]: Mapping of source PFN → destination URL,
-            iterable in sorted-PFN order.
+        list[tuple[str, str]]: List of ``(source_pfn, destination_url)`` pairs
+            in sorted-PFN order.  A list (not dict) so that duplicate source
+            PFNs are preserved.
 
     Raises:
         ConfigError: If ``pfns`` is empty.
@@ -61,17 +65,17 @@ def plan(pfns, config):
 
 
 def _plan_single_destination(pfns, config):
-    # type: (list, dict) -> OrderedDict
-    dst_prefix  = config["transfer"]["dst_prefix"].rstrip("/")
-    test_label  = config["run"]["test_label"]
+    # type: (list, dict) -> list
+    dst_prefix   = config["transfer"]["dst_prefix"].rstrip("/")
+    test_label   = config["run"]["test_label"]
     preserve_ext = config["transfer"]["preserve_extension"]
 
     sorted_pfns = sorted(pfns)
-    mapping = OrderedDict()
+    mapping = []
     for idx, pfn in enumerate(sorted_pfns):
         ext  = _extract_extension(pfn) if preserve_ext else ""
         dest = "{}/{}/testfile_{:06d}{}".format(dst_prefix, test_label, idx, ext)
-        mapping[pfn] = dest
+        mapping.append((pfn, dest))
 
     logger.info(
         "Destination mapping: %d PFNs → %s/%s/testfile_NNNNNN",
@@ -81,7 +85,7 @@ def _plan_single_destination(pfns, config):
 
 
 def _plan_multi_destination(pfns, destinations, config):
-    # type: (list, list, dict) -> OrderedDict
+    # type: (list, list, dict) -> list
     """Distribute *pfns* across *destinations* proportionally by weight.
 
     Files are partitioned into contiguous groups, one per destination, in
@@ -110,7 +114,7 @@ def _plan_multi_destination(pfns, destinations, config):
     for k in range(leftover):
         counts[fractions[k][1]] += 1
 
-    mapping = OrderedDict()
+    mapping = []
     offset  = 0
     for dest_cfg, count in zip(destinations, counts):
         prefix = dest_cfg["prefix"].rstrip("/")
@@ -119,7 +123,7 @@ def _plan_multi_destination(pfns, destinations, config):
             dest = "{}/{}/testfile_{:06d}{}".format(
                 prefix, test_label, local_idx, ext
             )
-            mapping[pfn] = dest
+            mapping.append((pfn, dest))
         logger.info(
             "Destination mapping: %d PFNs → %s/%s/testfile_NNNNNN (weight %d)",
             count, prefix, test_label, dest_cfg["weight"],

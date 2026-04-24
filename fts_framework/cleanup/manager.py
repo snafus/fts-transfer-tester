@@ -62,8 +62,8 @@ def cleanup_pre(mapping, session, config):
     previous run.
 
     Args:
-        mapping: Source → destination ``OrderedDict`` as returned by
-            ``destination.planner.plan()``.  Values are the destination URLs.
+        mapping: List of ``(src_pfn, dest_url)`` pairs as returned by
+            ``destination.planner.plan()``.
         session (requests.Session): Authenticated session with ``dest_write``
             token.
         config (dict): Validated framework config dict (used for logging
@@ -74,7 +74,7 @@ def cleanup_pre(mapping, session, config):
             ``url``, ``status_code``, ``success`` (bool), ``error``
             (str or None).
     """
-    dest_urls = list(mapping.values())
+    dest_urls = [dst for src, dst in mapping]
     logger.info("Pre-cleanup: attempting DELETE on %d destination URL(s)", len(dest_urls))
     audit = _delete_urls(dest_urls, session, label="pre-cleanup")
     ok = sum(1 for r in audit if r["success"])

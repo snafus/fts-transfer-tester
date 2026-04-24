@@ -47,10 +47,10 @@ def _config(test_label="test-run", endpoint="https://fts.example.org:8446",
 
 
 def _mapping():
-    return {
-        "https://src/file1": "https://dst/run/file1",
-        "https://src/file2": "https://dst/run/file2",
-    }
+    return [
+        ("https://src/file1", "https://dst/run/file1"),
+        ("https://src/file2", "https://dst/run/file2"),
+    ]
 
 
 def _subjob(job_id="job-1", chunk_index=0, retry_round=0,
@@ -193,7 +193,7 @@ class TestWriteManifest:
         init_run_directory("r1", _config(), runs_dir=str(tmp_path))
         write_manifest("r1", _mapping(), _config(), runs_dir=str(tmp_path))
         m = load_manifest("r1", runs_dir=str(tmp_path))
-        assert m["destination_mapping"] == _mapping()
+        assert m["destination_mapping"] == [list(pair) for pair in _mapping()]
 
     def test_manifest_subjobs_initially_empty(self, tmp_path):
         init_run_directory("r1", _config(), runs_dir=str(tmp_path))

@@ -108,7 +108,7 @@ def write_manifest(run_id, dest_mapping, config, fts_monitor_base="",
 
     Args:
         run_id (str): Unique run identifier.
-        dest_mapping (dict): ``{src_pfn: dest_url}`` mapping from
+        dest_mapping (list): ``[(src_pfn, dest_url)]`` pairs from
             ``destination.planner``.
         config (dict): Validated framework config dict.
         fts_monitor_base (str): FTS WebMonitor base URL (optional).
@@ -123,7 +123,7 @@ def write_manifest(run_id, dest_mapping, config, fts_monitor_base="",
         "fts_endpoint": config.get("fts", {}).get("endpoint", ""),
         "fts_monitor_base": fts_monitor_base,
         "ssl_verify_disabled": config.get("fts", {}).get("ssl_verify", True) is False,
-        "destination_mapping": dict(dest_mapping),
+        "destination_mapping": [list(pair) for pair in dest_mapping],
         "subjobs": [],
         "completed": False,
     }
