@@ -70,9 +70,27 @@ def _derive_state_from_files(fts_client, job_id):
         )
         return None
 
+    # Count occurrences of each file state for logging.
+    state_counts = {}
     for f in files:
-        if f.get("file_state", "") not in _FILE_TERMINAL_STATES:
-            return None  # at least one file still active
+        fs = f.get("file_state", "UNKNOWN")
+        state_counts[fs] = state_counts.get(fs, 0) + 1
+
+    counts_str = "  ".join(
+        "{} {}".format(v, k)
+        for k, v in sorted(state_counts.items(), key=lambda x: x[0])
+    )
+    logger.info(
+        "stuck-ACTIVE check job %s: %d files — %s",
+        job_id, len(files), counts_str,
+    )
+
+    non_terminal = [
+        f for f in files
+        if f.get("file_state", "") not in _FILE_TERMINAL_STATES
+    ]
+    if non_terminal:
+        return None
 
     # Derive effective job state from meaningful files (exclude NOT_USED)
     meaningful = [f for f in files if f.get("file_state") != "NOT_USED"]
@@ -219,11 +237,6 @@ def poll_to_completion(subjobs, fts_client, config):
                 if stuck_active_check_rounds > 0:
                     _nonterminal_rounds[job_id] = _nonterminal_rounds.get(job_id, 0) + 1
                     if _nonterminal_rounds[job_id] % stuck_active_check_rounds == 0:
-                        logger.info(
-                            "Job %s has been non-terminal for %d rounds "
-                            "— checking file-level states",
-                            job_id, _nonterminal_rounds[job_id],
-                        )
                         derived = _derive_state_from_files(fts_client, job_id)
                         if derived is not None:
                             logger.warning(
