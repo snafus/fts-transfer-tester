@@ -242,6 +242,7 @@ The `tokens` YAML section may be omitted entirely if all three roles are satisfi
 | `backoff_multiplier` | float | `1.5` | Multiplier applied to the interval after each round |
 | `max_interval_s` | int | `300` | Maximum polling interval (cap on backoff) |
 | `campaign_timeout_s` | int | `86400` | Raise `PollingTimeoutError` if jobs are still active after this many seconds |
+| `stuck_active_check_rounds` | int | `10` | Every N consecutive non-terminal poll rounds, fetch `GET /jobs/{id}/files` and derive the effective job state from file-level outcomes. Catches jobs stuck in `ACTIVE` whose job-level state never updates. Set to `0` to disable. |
 
 ### `cleanup`
 
