@@ -154,7 +154,11 @@ def build_payload(chunk_mapping, checksums, config, run_id, chunk_index, retry_r
         payload["params"]["overwrite"] = True
 
     if transfer_cfg.get("unmanaged_tokens", False):
-        payload["params"]["unmanaged_tokens"] = True
+        # NOT YET IMPLEMENTED: unmanaged_tokens mode (FTS3 lifecycle opt-out).
+        logger.warning(
+            "transfer.unmanaged_tokens=true is not yet implemented — "
+            "FTS3 will manage token lifecycle for this job"
+        )
 
     logger.debug(
         "Built payload for chunk %d (retry_round=%d): %d files",

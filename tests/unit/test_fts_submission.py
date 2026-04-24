@@ -342,10 +342,17 @@ class TestBuildPayload:
         payload = build_payload(mapping, {}, _config(), RUN_ID, 0, 0)
         assert "unmanaged_tokens" not in payload["params"]
 
-    def test_unmanaged_tokens_flag_set_when_enabled(self):
+    def test_unmanaged_tokens_logs_warning(self, caplog):
+        import logging
+        mapping = self._make_chunk(["https://src.example.org/f.dat"])
+        with caplog.at_level(logging.WARNING, logger="fts_framework.fts.submission"):
+            build_payload(mapping, {}, _config(unmanaged_tokens=True), RUN_ID, 0, 0)
+        assert any("not yet implemented" in r.message for r in caplog.records)
+
+    def test_unmanaged_tokens_not_sent_to_fts(self):
         mapping = self._make_chunk(["https://src.example.org/f.dat"])
         payload = build_payload(mapping, {}, _config(unmanaged_tokens=True), RUN_ID, 0, 0)
-        assert payload["params"]["unmanaged_tokens"] is True
+        assert "unmanaged_tokens" not in payload["params"]
 
     def test_storage_tokens_absent_when_not_configured(self):
         mapping = self._make_chunk(["https://src.example.org/f.dat"])

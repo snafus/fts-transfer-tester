@@ -164,9 +164,6 @@ def main():
             val = config["tokens"].get(role) or ""
             status = "OK ({} chars)".format(len(val)) if val else "MISSING"
             print("  {:<16} {}  [{}]".format(role, status, sources[role]))
-            # TEMPORARY DEBUG — remove before merge
-            if val:
-                print("    {}".format(val))
         print()
         sys.exit(0)
 
