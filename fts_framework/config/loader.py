@@ -85,6 +85,7 @@ _DEFAULTS = {
         "verify_checksum": "both",
         "overwrite": False,
         "max_files": None,
+        "shuffle_source_pfns": False,
         "chunk_size": 200,
         "priority": 3,
         "activity": "default",
@@ -701,6 +702,14 @@ def _validate_transfer(config):
     max_files = config["transfer"]["max_files"]
     if max_files is not None:
         _require_int(max_files, "transfer.max_files", min_val=1)
+
+    shuffle = config["transfer"]["shuffle_source_pfns"]
+    if not isinstance(shuffle, bool):
+        raise ConfigError(
+            "transfer.shuffle_source_pfns must be a boolean (true/false), got {!r}".format(
+                shuffle
+            )
+        )
 
     unmanaged_tokens = config["transfer"]["unmanaged_tokens"]
     if not isinstance(unmanaged_tokens, bool):

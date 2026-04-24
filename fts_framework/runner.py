@@ -35,6 +35,7 @@ Programmatic usage::
 
 import argparse
 import logging
+import random
 import sys
 import uuid
 from datetime import datetime
@@ -310,6 +311,10 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
         pfns, supplied_checksums = inventory_loader.load(
             config["transfer"]["source_pfns_file"]
         )
+        if config.get("transfer", {}).get("shuffle_source_pfns"):
+            random.shuffle(pfns)
+            logger.info("Source PFNs shuffled (%d total)", len(pfns))
+
         max_files = config.get("transfer", {}).get("max_files")
         if max_files is not None:
             if len(pfns) > max_files:

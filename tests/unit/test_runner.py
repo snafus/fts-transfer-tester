@@ -966,6 +966,49 @@ class TestRunCampaign:
             run_campaign(config, runs_dir=str(tmp_path))
         assert any("sampling" in r.message for r in caplog.records)
 
+    def test_shuffle_source_pfns_calls_random_shuffle(self, tmp_path, monkeypatch):
+        _install_run_campaign_mocks(monkeypatch, tmp_path)
+        pfns = ["https://src/f{}".format(i) for i in range(10)]
+        monkeypatch.setattr(
+            "fts_framework.inventory.loader.load",
+            lambda path: (list(pfns), {}),
+        )
+        shuffle_calls = []
+        monkeypatch.setattr(
+            "fts_framework.runner.random.shuffle",
+            lambda lst: shuffle_calls.append(list(lst)) or lst.reverse(),
+        )
+        monkeypatch.setattr(
+            "fts_framework.destination.planner.plan",
+            lambda p, c: [(x, "https://dst/x") for x in p],
+        )
+        config = _base_config()
+        config["transfer"]["shuffle_source_pfns"] = True
+        from fts_framework.runner import run_campaign
+        run_campaign(config, runs_dir=str(tmp_path))
+        assert len(shuffle_calls) == 1
+
+    def test_shuffle_false_does_not_call_random_shuffle(self, tmp_path, monkeypatch):
+        _install_run_campaign_mocks(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            "fts_framework.inventory.loader.load",
+            lambda path: (["https://src/f1"], {}),
+        )
+        shuffle_calls = []
+        monkeypatch.setattr(
+            "fts_framework.runner.random.shuffle",
+            lambda lst: shuffle_calls.append(lst),
+        )
+        monkeypatch.setattr(
+            "fts_framework.destination.planner.plan",
+            lambda p, c: [(x, "https://dst/x") for x in p],
+        )
+        config = _base_config()
+        config["transfer"]["shuffle_source_pfns"] = False
+        from fts_framework.runner import run_campaign
+        run_campaign(config, runs_dir=str(tmp_path))
+        assert shuffle_calls == []
+
     def test_empty_file_records_with_retry_max_set(self, tmp_path, monkeypatch):
         """W2: empty file_records with framework_retry_max>0 exits loop without submitting retry."""
         _install_run_campaign_mocks(monkeypatch, tmp_path, file_records=[])
