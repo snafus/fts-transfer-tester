@@ -31,6 +31,8 @@ Token resolution order (highest wins)
    ``DEST_WRITE_TOKEN``.
 4. Shared environment variable ``FTS_TOKEN`` — applies to all three roles.
 5. Values in the YAML ``tokens`` section.
+6. OIDC client-credentials generation (``oidc.enabled: true``) — fires for
+   any role still unset after steps 1–5.
 
 The YAML ``tokens`` section may be omitted entirely if all three roles are
 supplied through environment variables or keyword arguments.
@@ -38,10 +40,13 @@ supplied through environment variables or keyword arguments.
 
 import logging
 import os
+from urllib.parse import urlparse as _urlparse
 
 import yaml
 
 from fts_framework.exceptions import ConfigError
+from fts_framework.auth import env_loader as _env_loader
+from fts_framework.auth import oidc as _oidc
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +71,11 @@ _ALLOWED_VERIFY_CHECKSUM = ("both", "source", "target", "none")
 # ---------------------------------------------------------------------------
 
 _DEFAULTS = {
+    "oidc": {
+        "enabled": False,
+        "env_file": ".env",
+        "roles": {},
+    },
     "run": {
         "run_id": None,
     },
@@ -80,6 +90,7 @@ _DEFAULTS = {
         "activity": "default",
         "job_metadata": {},
         "unmanaged_tokens": False,
+        "source_prefix": None,
     },
     "concurrency": {
         "want_digest_workers": 8,
@@ -119,6 +130,66 @@ _DEFAULTS = {
 
 # Sections that must be dicts — validated before merging
 _DICT_SECTIONS = set(_DEFAULTS.keys()) | {"fts", "tokens"}
+
+
+# ---------------------------------------------------------------------------
+# Token source identification (for --check-tokens reporting)
+# ---------------------------------------------------------------------------
+
+def identify_token_sources(path, token=None, fts_submit_token=None,
+                           source_read_token=None, dest_write_token=None):
+    # type: (str, object, object, object, object) -> dict
+    """Return a dict describing where each token role will be sourced from.
+
+    Does NOT fetch OIDC tokens — reports 'oidc' as the source if that is
+    where the role would be resolved.  Raises ConfigError if the file cannot
+    be read.
+
+    Returns:
+        dict mapping role name → source description string, e.g.:
+            {
+                "fts_submit":  "cli (--fts-submit-token)",
+                "source_read": "env (SOURCE_READ_TOKEN)",
+                "dest_write":  "oidc (https://iam.example.org/token)",
+            }
+    """
+    raw = _read_yaml(path)
+    config = _apply_defaults(raw)
+    oidc_cfg = config.get("oidc", {})
+
+    sources = {}
+    for role in ("fts_submit", "source_read", "dest_write"):
+        # Check in priority order, highest first.
+        per_role_cli = {
+            "fts_submit":  fts_submit_token,
+            "source_read": source_read_token,
+            "dest_write":  dest_write_token,
+        }.get(role)
+        if per_role_cli:
+            sources[role] = "cli (--{}-token)".format(role.replace("_", "-"))
+            continue
+        if token:
+            sources[role] = "cli (--token)"
+            continue
+        per_role_env = os.environ.get(_ENV_TOKEN_ROLES[role])
+        if per_role_env:
+            sources[role] = "env ({})".format(_ENV_TOKEN_ROLES[role])
+            continue
+        shared_env = os.environ.get(_ENV_TOKEN_SHARED)
+        if shared_env:
+            sources[role] = "env ({})".format(_ENV_TOKEN_SHARED)
+            continue
+        yaml_val = (raw.get("tokens") or {}).get(role)
+        if yaml_val:
+            sources[role] = "yaml (tokens.{})".format(role)
+            continue
+        if oidc_cfg.get("enabled") and (oidc_cfg.get("roles") or {}).get(role):
+            endpoint = oidc_cfg["roles"][role].get("token_endpoint", "?")
+            sources[role] = "oidc ({})".format(endpoint)
+            continue
+        sources[role] = "MISSING"
+
+    return sources
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +272,8 @@ def load(path, token=None, fts_submit_token=None,
         raw["tokens"] = tokens_section
 
     config = _apply_defaults(raw)
+    _validate_oidc(config)
+    _resolve_oidc_tokens(config)
     _validate(config)
 
     logger.info(
@@ -309,6 +382,104 @@ def _apply_defaults(raw):
     return result
 
 
+def _resolve_scope_template(scope, config):
+    # type: (str, dict) -> str
+    """Substitute {dst_prefix_path} and {src_prefix_path} in a scope string.
+
+    Raises:
+        ConfigError: If {src_prefix_path} is used but transfer.source_prefix
+            is not set.
+    """
+    if "{dst_prefix_path}" in scope:
+        dst = (config.get("transfer") or {}).get("dst_prefix") or ""
+        scope = scope.replace("{dst_prefix_path}", _urlparse(dst).path if dst else "")
+    if "{src_prefix_path}" in scope:
+        src = (config.get("transfer") or {}).get("source_prefix") or ""
+        if not src:
+            raise ConfigError(
+                "OIDC scope uses {src_prefix_path} but transfer.source_prefix is not set"
+            )
+        scope = scope.replace("{src_prefix_path}", _urlparse(src).path)
+    return scope
+
+
+def refresh_oidc_tokens_for_roles(config, roles):
+    # type: (dict, list) -> None
+    """Re-fetch OIDC tokens for *roles*, re-evaluating scope templates.
+
+    Intended for the sequence runner when a per-trial override (e.g.
+    ``transfer.dst_prefix``) changes the effective scope for a role.
+    Clears the stored token for each named role then re-runs OIDC
+    resolution so the template is substituted against the updated config.
+    """
+    tokens = config.setdefault("tokens", {})
+    for role in roles:
+        tokens[role] = None
+    _resolve_oidc_tokens(config)
+
+
+def _resolve_oidc_tokens(config):
+    # type: (dict) -> None
+    """Fetch OIDC tokens for any role not yet satisfied by higher-priority sources.
+
+    Only runs when ``oidc.enabled`` is True.  Tokens are injected directly
+    into ``config["tokens"]`` before validation.
+    """
+    oidc_cfg = config.get("oidc", {})
+    if not oidc_cfg.get("enabled"):
+        return
+
+    tokens = config.setdefault("tokens", {})
+    roles_cfg = oidc_cfg.get("roles") or {}
+    if not roles_cfg:
+        return
+
+    ssl_verify = config.get("fts", {}).get("ssl_verify", True)
+
+    # Load .env file once; ignore missing file if no role needs it
+    env_file_vars = {}
+    env_file = oidc_cfg.get("env_file") or ".env"
+    if os.path.isfile(env_file):
+        try:
+            env_file_vars = _env_loader.load_env_file(env_file)
+        except IOError as exc:
+            raise ConfigError("Cannot read oidc.env_file {!r}: {}".format(env_file, exc))
+
+    for role in ("fts_submit", "source_read", "dest_write"):
+        if tokens.get(role):
+            continue
+        role_cfg = roles_cfg.get(role)
+        if not role_cfg:
+            continue
+
+        endpoint    = role_cfg.get("token_endpoint") or ""
+        id_var      = role_cfg.get("client_id_var") or ""
+        secret_var  = role_cfg.get("client_secret_var") or ""
+        scope       = _resolve_scope_template(role_cfg.get("scope") or "", config)
+        audience    = role_cfg.get("audience") or None
+
+        client_id     = _env_loader.resolve_var(id_var, os.environ, env_file_vars) if id_var else None
+        client_secret = _env_loader.resolve_var(secret_var, os.environ, env_file_vars) if secret_var else None
+
+        if not client_id:
+            raise ConfigError(
+                "OIDC role {!r}: client_id_var {!r} not set in environment or env_file".format(
+                    role, id_var
+                )
+            )
+        if not client_secret:
+            raise ConfigError(
+                "OIDC role {!r}: client_secret_var {!r} not set in environment or env_file".format(
+                    role, secret_var
+                )
+            )
+
+        logger.info("Fetching OIDC token for role %r from %s", role, endpoint)
+        tokens[role] = _oidc.fetch_token(
+            endpoint, client_id, client_secret, scope, ssl_verify, audience=audience
+        )
+
+
 def _validate(config):
     # type: (dict) -> None
     """Validate required fields, types, and value constraints.
@@ -321,6 +492,7 @@ def _validate(config):
     """
     _validate_run(config)
     _validate_fts(config)
+    _validate_oidc(config)
     _validate_tokens(config)
     _validate_transfer(config)
     _validate_concurrency(config)
@@ -412,6 +584,33 @@ def _validate_fts(config):
             )
 
 
+def _validate_oidc(config):
+    # type: (dict) -> None
+    """Validate the oidc section structure when enabled."""
+    oidc_cfg = config.get("oidc", {})
+    if not oidc_cfg.get("enabled"):
+        return
+
+    roles_cfg = oidc_cfg.get("roles") or {}
+    for role, role_cfg in roles_cfg.items():
+        if not isinstance(role_cfg, dict):
+            raise ConfigError(
+                "oidc.roles.{} must be a mapping, got {!r}".format(role, type(role_cfg).__name__)
+            )
+        endpoint = role_cfg.get("token_endpoint") or ""
+        if not endpoint.startswith("https://"):
+            raise ConfigError(
+                "oidc.roles.{}.token_endpoint must be an https:// URL, got: {!r}".format(
+                    role, endpoint
+                )
+            )
+        for field in ("client_id_var", "client_secret_var", "scope"):
+            if not role_cfg.get(field):
+                raise ConfigError(
+                    "oidc.roles.{}.{} is required".format(role, field)
+                )
+
+
 def _validate_tokens(config):
     # type: (dict) -> None
     if "tokens" not in config or not config["tokens"]:
@@ -469,6 +668,17 @@ def _validate_transfer(config):
                 unmanaged_tokens
             )
         )
+
+    source_prefix = config["transfer"]["source_prefix"]
+    if source_prefix is not None:
+        if not isinstance(source_prefix, str) or not (
+            source_prefix.startswith("https://") or source_prefix.startswith("davs://")
+        ):
+            raise ConfigError(
+                "transfer.source_prefix must be an https:// or davs:// URL, got: {!r}".format(
+                    source_prefix
+                )
+            )
 
 def _validate_concurrency(config):
     # type: (dict) -> None

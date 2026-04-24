@@ -323,32 +323,64 @@ class TestBuildPayload:
         payload = build_payload(mapping, {}, _config(activity=None), RUN_ID, 0, 0)
         assert payload["files"][0]["file_metadata"]["activity"] == "default"
 
-    def test_unmanaged_tokens_absent_by_default(self):
+    def test_storage_tokens_per_file_by_default(self):
+        mapping = self._make_chunk(["https://src.example.org/f.dat"])
+        payload = build_payload(mapping, {}, _config(), RUN_ID, 0, 0)
+        assert payload["files"][0]["source_tokens"] == ["tok_source"]
+        assert payload["files"][0]["destination_tokens"] == ["tok_dest"]
+
+    def test_storage_tokens_not_in_params(self):
         mapping = self._make_chunk(["https://src.example.org/f.dat"])
         payload = build_payload(mapping, {}, _config(), RUN_ID, 0, 0)
         assert "source_token" not in payload["params"]
         assert "destination_token" not in payload["params"]
+        assert "source_tokens" not in payload["params"]
+        assert "destination_tokens" not in payload["params"]
 
-    def test_unmanaged_tokens_included_when_enabled(self):
-        mapping = self._make_chunk(["https://src.example.org/f.dat"])
-        payload = build_payload(mapping, {}, _config(unmanaged_tokens=True), RUN_ID, 0, 0)
-        assert payload["params"]["source_token"] == "tok_source"
-        assert payload["params"]["destination_token"] == "tok_dest"
-        assert payload["params"]["unmanaged_tokens"] is True
-
-    def test_unmanaged_tokens_absent_when_disabled(self):
+    def test_unmanaged_tokens_flag_absent_by_default(self):
         mapping = self._make_chunk(["https://src.example.org/f.dat"])
         payload = build_payload(mapping, {}, _config(), RUN_ID, 0, 0)
         assert "unmanaged_tokens" not in payload["params"]
 
-    def test_unmanaged_tokens_uses_correct_roles(self):
+    def test_unmanaged_tokens_logs_warning(self, caplog):
+        import logging
         mapping = self._make_chunk(["https://src.example.org/f.dat"])
-        cfg = _config(unmanaged_tokens=True)
+        with caplog.at_level(logging.WARNING, logger="fts_framework.fts.submission"):
+            build_payload(mapping, {}, _config(unmanaged_tokens=True), RUN_ID, 0, 0)
+        assert any("not yet implemented" in r.message for r in caplog.records)
+
+    def test_unmanaged_tokens_not_sent_to_fts(self):
+        mapping = self._make_chunk(["https://src.example.org/f.dat"])
+        payload = build_payload(mapping, {}, _config(unmanaged_tokens=True), RUN_ID, 0, 0)
+        assert "unmanaged_tokens" not in payload["params"]
+
+    def test_storage_tokens_absent_when_not_configured(self):
+        mapping = self._make_chunk(["https://src.example.org/f.dat"])
+        cfg = _config()
+        cfg["tokens"].pop("source_read")
+        cfg["tokens"].pop("dest_write")
+        payload = build_payload(mapping, {}, cfg, RUN_ID, 0, 0)
+        assert "source_tokens" not in payload["files"][0]
+        assert "destination_tokens" not in payload["files"][0]
+
+    def test_storage_tokens_use_correct_roles(self):
+        mapping = self._make_chunk(["https://src.example.org/f.dat"])
+        cfg = _config()
         cfg["tokens"]["source_read"] = "source_role_tok"
         cfg["tokens"]["dest_write"] = "dest_role_tok"
         payload = build_payload(mapping, {}, cfg, RUN_ID, 0, 0)
-        assert payload["params"]["source_token"] == "source_role_tok"
-        assert payload["params"]["destination_token"] == "dest_role_tok"
+        assert payload["files"][0]["source_tokens"] == ["source_role_tok"]
+        assert payload["files"][0]["destination_tokens"] == ["dest_role_tok"]
+
+    def test_storage_tokens_present_on_all_files(self):
+        mapping = self._make_chunk([
+            "https://src.example.org/a.dat",
+            "https://src.example.org/b.dat",
+        ])
+        payload = build_payload(mapping, {}, _config(), RUN_ID, 0, 0)
+        for f in payload["files"]:
+            assert f["source_tokens"] == ["tok_source"]
+            assert f["destination_tokens"] == ["tok_dest"]
 
 
 # ---------------------------------------------------------------------------
