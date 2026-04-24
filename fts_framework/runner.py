@@ -164,6 +164,7 @@ def _submit_chunks(mapping, checksums, config, run_id, retry_round,
                 "terminal": True,
                 "payload_path": payload_path,
                 "fts_monitor_url": "",
+                "source_pfns": list(chunk_map.keys()),
             })
             continue
 
@@ -408,7 +409,15 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
             fr for fr in file_records
             if fr["file_state"] in ("FAILED", "CANCELED")
         ]
-        if not failed:
+
+        # Files whose chunk never reached FTS3 (SUBMISSION_FAILED) have no
+        # file_records entry — collect their PFNs separately.
+        submission_failed_pfns = []
+        for sj in all_subjobs:
+            if sj.get("status") == "SUBMISSION_FAILED":
+                submission_failed_pfns.extend(sj.get("source_pfns", []))
+
+        if not failed and not submission_failed_pfns:
             logger.info(
                 "Framework retry round %d: no failed files — stopping retry loop",
                 retry_round,
@@ -416,11 +425,14 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
             break
 
         logger.info(
-            "Framework retry round %d: resubmitting %d failed file(s)",
-            retry_round, len(failed),
+            "Framework retry round %d: resubmitting %d failed file(s) "
+            "and %d submission-failed file(s)",
+            retry_round, len(failed), len(submission_failed_pfns),
         )
 
         failed_sources = {fr["source_surl"] for fr in failed}
+        failed_sources.update(submission_failed_pfns)
+
         retry_mapping = OrderedDict(
             (src, dst) for src, dst in mapping.items()
             if src in failed_sources

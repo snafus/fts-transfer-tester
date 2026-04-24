@@ -291,6 +291,18 @@ class TestSubmitChunks:
         assert result[0]["terminal"] is True
         assert result[0]["job_id"] is None
 
+    def test_submission_failed_stores_source_pfns(self, tmp_path, monkeypatch):
+        from fts_framework.exceptions import SubmissionError
+        def _failing_submit(client, payload, cfg, run_id, ci, rr):
+            raise SubmissionError(ci, 500, "no matching job found")
+        _patch_submit_internals(monkeypatch, submit_fn=_failing_submit)
+        from fts_framework.runner import _submit_chunks
+        result = _submit_chunks(
+            OrderedDict([("src1", "dst1"), ("src2", "dst2")]),
+            {}, self._config(), "run-1", 0, _FakeClient([]), str(tmp_path)
+        )
+        assert result[0]["source_pfns"] == ["src1", "src2"]
+
     def test_submission_error_does_not_abort_remaining_chunks(self, tmp_path, monkeypatch):
         from fts_framework.exceptions import SubmissionError
         call_count = [0]
@@ -636,6 +648,67 @@ class TestRunCampaign:
         from fts_framework.runner import run_campaign
         run_campaign(config, runs_dir=str(tmp_path))
         assert submit_calls[0] == 2  # initial + 1 retry
+
+    def test_submission_failed_pfns_included_in_framework_retry(self, tmp_path, monkeypatch):
+        """Files from SUBMISSION_FAILED chunks must appear in the framework retry mapping."""
+        import fts_framework.runner as runner_mod
+        import fts_framework.fts.collector as collector_mod
+
+        file_records = []  # no file_records — chunk never reached FTS3
+
+        _install_run_campaign_mocks(monkeypatch, tmp_path, file_records=file_records)
+
+        # Override _submit_chunks:
+        # Round 0 → SUBMISSION_FAILED for "https://src/f1"
+        # Round 1 (retry) → capture the mapping passed
+        retry_mappings = []
+        call_count = [0]
+
+        def _fake_submit(mapping, checksums, config, run_id, retry_round, client, runs_dir):
+            call_count[0] += 1
+            if retry_round == 0:
+                return [{
+                    "job_id": None, "chunk_index": 0, "retry_round": 0,
+                    "terminal": True, "status": "SUBMISSION_FAILED",
+                    "file_count": 1, "payload_path": "/p",
+                    "fts_monitor_url": "", "run_id": run_id,
+                    "submitted_at": "2026-01-01T00:00:00Z",
+                    "source_pfns": ["https://src/f1"],
+                }]
+            retry_mappings.append(dict(mapping))
+            return [{
+                "job_id": "job-retry", "chunk_index": 0, "retry_round": retry_round,
+                "terminal": False, "status": "SUBMITTED", "file_count": 1,
+                "payload_path": "/p", "fts_monitor_url": "", "run_id": run_id,
+                "submitted_at": "2026-01-01T00:00:00Z",
+            }]
+
+        monkeypatch.setattr(runner_mod, "_submit_chunks", _fake_submit)
+
+        # Poller must preserve already-terminal subjobs (SUBMISSION_FAILED has terminal=True)
+        monkeypatch.setattr(
+            "fts_framework.fts.poller.poll_to_completion",
+            lambda subjobs, client, config: [
+                sj if sj.get("terminal") else dict(sj, terminal=True, status="FINISHED")
+                for sj in subjobs
+            ],
+        )
+
+        # harvest_all returns empty for both rounds
+        monkeypatch.setattr(
+            collector_mod, "harvest_all",
+            lambda subjobs, client, run_id=None, runs_dir=None: ([], [], []),
+        )
+
+        config = dict(_base_config())
+        config["retry"] = {"framework_retry_max": 1, "fts_retry_max": 0,
+                           "min_success_threshold": 0.0}
+        from fts_framework.runner import run_campaign
+        run_campaign(config, runs_dir=str(tmp_path))
+
+        assert call_count[0] == 2  # initial + 1 retry
+        assert len(retry_mappings) == 1
+        assert "https://src/f1" in retry_mappings[0]
 
     def test_pre_cleanup_called_when_configured(self, tmp_path, monkeypatch):
         _install_run_campaign_mocks(monkeypatch, tmp_path)
