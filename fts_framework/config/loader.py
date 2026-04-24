@@ -40,6 +40,7 @@ supplied through environment variables or keyword arguments.
 
 import logging
 import os
+from urllib.parse import urlparse as _urlparse
 
 import yaml
 
@@ -89,6 +90,7 @@ _DEFAULTS = {
         "activity": "default",
         "job_metadata": {},
         "unmanaged_tokens": False,
+        "source_prefix": None,
     },
     "concurrency": {
         "want_digest_workers": 8,
@@ -380,6 +382,42 @@ def _apply_defaults(raw):
     return result
 
 
+def _resolve_scope_template(scope, config):
+    # type: (str, dict) -> str
+    """Substitute {dst_prefix_path} and {src_prefix_path} in a scope string.
+
+    Raises:
+        ConfigError: If {src_prefix_path} is used but transfer.source_prefix
+            is not set.
+    """
+    if "{dst_prefix_path}" in scope:
+        dst = (config.get("transfer") or {}).get("dst_prefix") or ""
+        scope = scope.replace("{dst_prefix_path}", _urlparse(dst).path if dst else "")
+    if "{src_prefix_path}" in scope:
+        src = (config.get("transfer") or {}).get("source_prefix") or ""
+        if not src:
+            raise ConfigError(
+                "OIDC scope uses {src_prefix_path} but transfer.source_prefix is not set"
+            )
+        scope = scope.replace("{src_prefix_path}", _urlparse(src).path)
+    return scope
+
+
+def refresh_oidc_tokens_for_roles(config, roles):
+    # type: (dict, list) -> None
+    """Re-fetch OIDC tokens for *roles*, re-evaluating scope templates.
+
+    Intended for the sequence runner when a per-trial override (e.g.
+    ``transfer.dst_prefix``) changes the effective scope for a role.
+    Clears the stored token for each named role then re-runs OIDC
+    resolution so the template is substituted against the updated config.
+    """
+    tokens = config.setdefault("tokens", {})
+    for role in roles:
+        tokens[role] = None
+    _resolve_oidc_tokens(config)
+
+
 def _resolve_oidc_tokens(config):
     # type: (dict) -> None
     """Fetch OIDC tokens for any role not yet satisfied by higher-priority sources.
@@ -417,7 +455,7 @@ def _resolve_oidc_tokens(config):
         endpoint    = role_cfg.get("token_endpoint") or ""
         id_var      = role_cfg.get("client_id_var") or ""
         secret_var  = role_cfg.get("client_secret_var") or ""
-        scope       = role_cfg.get("scope") or ""
+        scope       = _resolve_scope_template(role_cfg.get("scope") or "", config)
         audience    = role_cfg.get("audience") or None
 
         client_id     = _env_loader.resolve_var(id_var, os.environ, env_file_vars) if id_var else None
@@ -630,6 +668,17 @@ def _validate_transfer(config):
                 unmanaged_tokens
             )
         )
+
+    source_prefix = config["transfer"]["source_prefix"]
+    if source_prefix is not None:
+        if not isinstance(source_prefix, str) or not (
+            source_prefix.startswith("https://") or source_prefix.startswith("davs://")
+        ):
+            raise ConfigError(
+                "transfer.source_prefix must be an https:// or davs:// URL, got: {!r}".format(
+                    source_prefix
+                )
+            )
 
 def _validate_concurrency(config):
     # type: (dict) -> None

@@ -47,15 +47,51 @@ def _generate_sequence_id(label=None):
     return "{}_{}".format(timestamp, short_uuid)
 
 
+# Config keys whose path component appears in OIDC scope templates.
+_SCOPE_PREFIX_VARS = {
+    "transfer.dst_prefix":    "{dst_prefix_path}",
+    "transfer.source_prefix": "{src_prefix_path}",
+}
+
+
 def _build_trial_config(baseline_config, case_params):
     # type: (dict, dict) -> dict
-    """Deep-copy *baseline_config* and apply *case_params* overrides."""
+    """Deep-copy *baseline_config* and apply *case_params* overrides.
+
+    If any override changes a key that affects an OIDC scope template
+    (e.g. ``transfer.dst_prefix`` when scope contains ``{dst_prefix_path}``),
+    the affected tokens are re-fetched with the updated scope.
+    """
     config = copy.deepcopy(baseline_config)
     for dotkey, value in case_params.items():
         seq_loader.apply_override(config, dotkey, value)
-    # Each trial must generate a fresh run_id.
     config.setdefault("run", {})["run_id"] = None
+    _refresh_oidc_if_needed(config, set(case_params.keys()))
     return config
+
+
+def _refresh_oidc_if_needed(config, overridden_keys):
+    # type: (dict, set) -> None
+    """Re-fetch OIDC tokens whose scope templates reference an overridden key."""
+    oidc_cfg = config.get("oidc", {})
+    if not oidc_cfg.get("enabled"):
+        return
+
+    roles_to_refresh = []
+    for dotkey, template_var in _SCOPE_PREFIX_VARS.items():
+        if dotkey not in overridden_keys:
+            continue
+        for role, role_cfg in (oidc_cfg.get("roles") or {}).items():
+            if template_var in (role_cfg.get("scope") or ""):
+                if role not in roles_to_refresh:
+                    roles_to_refresh.append(role)
+
+    if roles_to_refresh:
+        logger.debug(
+            "Re-fetching OIDC tokens for %s (scope prefix override: %s)",
+            roles_to_refresh, overridden_keys & set(_SCOPE_PREFIX_VARS),
+        )
+        config_loader.refresh_oidc_tokens_for_roles(config, roles_to_refresh)
 
 
 def _write_params_copy(sequence_dir, params_file):

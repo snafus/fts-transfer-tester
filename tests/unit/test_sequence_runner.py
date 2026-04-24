@@ -264,3 +264,156 @@ class TestResumeSkipping:
         assert seen_run_ids[0] == "run-crashed"
         assert seen_run_ids[1] != "run-crashed"
         assert seen_run_ids[1] is not None
+
+
+# ---------------------------------------------------------------------------
+# Per-trial OIDC token re-fetch when dst_prefix is overridden
+# ---------------------------------------------------------------------------
+
+class TestOidcPerTrialRefresh:
+    def test_dest_write_token_refreshed_when_dst_prefix_overridden(
+        self, tmp_path, monkeypatch
+    ):
+        """When a case overrides transfer.dst_prefix and dest_write scope uses
+        {dst_prefix_path}, a fresh OIDC token must be fetched for that trial."""
+        import fts_framework.sequence.runner as runner_mod
+        import fts_framework.config.loader as loader_mod
+        import fts_framework.auth.oidc as oidc_mod
+
+        fetch_calls = []
+
+        def _fake_fetch(endpoint, client_id, client_secret, scope, ssl_verify,
+                        audience=None):
+            fetch_calls.append(scope)
+            return "tok_for_{}".format(scope.replace(" ", "_"))
+
+        monkeypatch.setattr(oidc_mod, "fetch_token", _fake_fetch)
+
+        base_cfg = _base_config()
+        base_cfg["transfer"]["dst_prefix"] = "https://dst.example.org/base"
+        base_cfg["transfer"]["source_prefix"] = None
+        base_cfg["oidc"] = {
+            "enabled": True,
+            "env_file": str(tmp_path / "nonexistent.env"),
+            "roles": {
+                "fts_submit": {
+                    "token_endpoint":    "https://iam.example.org/token",
+                    "client_id_var":     "FTS_CLIENT_ID",
+                    "client_secret_var": "FTS_CLIENT_SECRET",
+                    "scope":             "openid profile",
+                },
+                "source_read": {
+                    "token_endpoint":    "https://iam.example.org/token",
+                    "client_id_var":     "SRC_CLIENT_ID",
+                    "client_secret_var": "SRC_CLIENT_SECRET",
+                    "scope":             "openid storage.read:/",
+                },
+                "dest_write": {
+                    "token_endpoint":    "https://iam.example.org/token",
+                    "client_id_var":     "DST_CLIENT_ID",
+                    "client_secret_var": "DST_CLIENT_SECRET",
+                    "scope":             "openid storage.modify:{dst_prefix_path}",
+                },
+            },
+        }
+        # Pre-populate tokens as if baseline load already ran
+        base_cfg["tokens"] = {
+            "fts_submit":  "baseline_fts_tok",
+            "source_read": "baseline_src_tok",
+            "dest_write":  "baseline_dst_tok",
+        }
+
+        monkeypatch.setenv("DST_CLIENT_ID",    "cid")
+        monkeypatch.setenv("DST_CLIENT_SECRET", "csec")
+
+        trial_configs = []
+
+        def _capture(config, runs_dir="runs"):
+            trial_configs.append(config["tokens"]["dest_write"])
+
+        monkeypatch.setattr(
+            runner_mod.seq_loader, "load",
+            lambda path: {
+                "baseline_config_path": "config/x.yaml",
+                "label": "test",
+                "output_base_dir": str(tmp_path),
+                "sweep_mode": "cartesian",
+                "trials": 1,
+                "cases": [
+                    {"transfer.dst_prefix": "https://dst.example.org/case0"},
+                    {"transfer.dst_prefix": "https://dst.example.org/case1"},
+                ],
+            },
+        )
+        monkeypatch.setattr(loader_mod, "load", lambda path, **kwargs: base_cfg)
+        monkeypatch.setattr(runner_mod, "run_campaign", _capture)
+        monkeypatch.setattr(runner_mod.seq_reporter, "generate_summary",
+                            lambda seq_dir, state, runs_dir="runs": None)
+        monkeypatch.setattr(runner_mod, "_write_params_copy",
+                            lambda seq_dir, params_file: None)
+
+        from fts_framework.sequence.runner import run_sequence
+        run_sequence("params.yaml", runs_dir=str(tmp_path))
+
+        # Each trial must have fetched a fresh dest_write token with the
+        # overridden dst_prefix path in the scope.
+        assert len(trial_configs) == 2
+        assert "case0" in trial_configs[0]
+        assert "case1" in trial_configs[1]
+        assert trial_configs[0] != trial_configs[1]
+
+    def test_token_not_refreshed_when_no_scope_template(
+        self, tmp_path, monkeypatch
+    ):
+        """If the dest_write scope has no {dst_prefix_path}, no re-fetch on
+        dst_prefix override."""
+        import fts_framework.sequence.runner as runner_mod
+        import fts_framework.config.loader as loader_mod
+        import fts_framework.auth.oidc as oidc_mod
+
+        fetch_calls = []
+        monkeypatch.setattr(oidc_mod, "fetch_token",
+                            lambda *a, **kw: fetch_calls.append(1) or "tok")
+
+        base_cfg = _base_config()
+        base_cfg["transfer"]["dst_prefix"] = "https://dst.example.org/base"
+        base_cfg["oidc"] = {
+            "enabled": True,
+            "env_file": str(tmp_path / "nonexistent.env"),
+            "roles": {
+                "dest_write": {
+                    "token_endpoint":    "https://iam.example.org/token",
+                    "client_id_var":     "DST_CLIENT_ID",
+                    "client_secret_var": "DST_CLIENT_SECRET",
+                    "scope":             "openid storage.modify:/",  # no template
+                },
+            },
+        }
+        base_cfg["tokens"] = {
+            "fts_submit":  "fts_tok",
+            "source_read": "src_tok",
+            "dest_write":  "dst_tok",
+        }
+
+        monkeypatch.setattr(
+            runner_mod.seq_loader, "load",
+            lambda path: {
+                "baseline_config_path": "config/x.yaml",
+                "label": "test",
+                "output_base_dir": str(tmp_path),
+                "sweep_mode": "cartesian",
+                "trials": 1,
+                "cases": [{"transfer.dst_prefix": "https://dst.example.org/other"}],
+            },
+        )
+        monkeypatch.setattr(loader_mod, "load", lambda path, **kwargs: base_cfg)
+        monkeypatch.setattr(runner_mod, "run_campaign", lambda config, runs_dir="runs": None)
+        monkeypatch.setattr(runner_mod.seq_reporter, "generate_summary",
+                            lambda seq_dir, state, runs_dir="runs": None)
+        monkeypatch.setattr(runner_mod, "_write_params_copy",
+                            lambda seq_dir, params_file: None)
+
+        from fts_framework.sequence.runner import run_sequence
+        run_sequence("params.yaml", runs_dir=str(tmp_path))
+
+        assert len(fetch_calls) == 0
