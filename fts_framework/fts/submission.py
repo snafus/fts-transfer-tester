@@ -113,6 +113,9 @@ def build_payload(chunk_mapping, checksums, config, run_id, chunk_index, retry_r
         "activity": activity_cfg or "default",
     }
 
+    source_token = config["tokens"].get("source_read")
+    dest_token   = config["tokens"].get("dest_write")
+
     files = []
     for src, dst in chunk_mapping.items():
         entry = {
@@ -124,6 +127,11 @@ def build_payload(chunk_mapping, checksums, config, run_id, chunk_index, retry_r
             # checksums[src] is "adler32:<hex>"; FTS3 expects this
             # "ALGO:VALUE" format in the checksum field.
             entry["checksum"] = checksums[src]
+        # FTS3 3.12+ expects storage tokens per-file as arrays.
+        if source_token:
+            entry["source_tokens"] = [source_token]
+        if dest_token:
+            entry["destination_tokens"] = [dest_token]
         files.append(entry)
 
     payload = {
@@ -145,14 +153,6 @@ def build_payload(chunk_mapping, checksums, config, run_id, chunk_index, retry_r
     if overwrite:
         payload["params"]["overwrite"] = True
 
-    # Forward storage tokens to FTS3 when present; FTS3 manages their lifecycle
-    # (refresh/exchange) unless unmanaged_tokens=True opts out of that.
-    source_token = config["tokens"].get("source_read")
-    dest_token   = config["tokens"].get("dest_write")
-    if source_token:
-        payload["params"]["source_token"] = source_token
-    if dest_token:
-        payload["params"]["destination_token"] = dest_token
     if transfer_cfg.get("unmanaged_tokens", False):
         payload["params"]["unmanaged_tokens"] = True
 
