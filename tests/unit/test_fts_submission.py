@@ -12,6 +12,8 @@ from fts_framework.fts.submission import (
     chunk,
     build_payload,
     _build_job_metadata,
+    _match_jobs,
+    _parse_job_metadata,
     submit_with_500_recovery,
 )
 from fts_framework.exceptions import SubmissionError
@@ -427,7 +429,7 @@ class TestSubmitWith500Recovery:
         monkeypatch.setattr(sub_mod.time, "sleep", lambda s: None)
         client = _FakeClient(
             post_responses=[_FakeResponse(500, "internal error")],
-            get_responses=[[]],  # empty scan
+            get_responses=[[], [], []],  # 3 scan attempts, all empty
         )
         with pytest.raises(SubmissionError) as exc_info:
             submit_with_500_recovery(client, {}, _config(), RUN_ID, 2, 0)
@@ -463,7 +465,7 @@ class TestSubmitWith500Recovery:
         monkeypatch.setattr(sub_mod.time, "sleep", lambda s: None)
         client = _FakeClient(
             post_responses=[_FakeResponse(500)],
-            get_responses=[[]],
+            get_responses=[[], [], []],
         )
         with pytest.raises(SubmissionError):
             submit_with_500_recovery(
@@ -478,7 +480,7 @@ class TestSubmitWith500Recovery:
         monkeypatch.setattr(sub_mod.time, "sleep", lambda s: None)
         client = _FakeClient(
             post_responses=[_FakeResponse(500)],
-            get_responses=[[]],
+            get_responses=[[], [], []],
         )
         with pytest.raises(SubmissionError):
             submit_with_500_recovery(client, {}, _config(), RUN_ID, 0, 0)
@@ -501,7 +503,7 @@ class TestSubmitWith500Recovery:
         }
         client = _FakeClient(
             post_responses=[_FakeResponse(500)],
-            get_responses=[[other_run_job]],
+            get_responses=[[other_run_job], [other_run_job], [other_run_job]],
         )
         with pytest.raises(SubmissionError):
             submit_with_500_recovery(client, {}, _config(), RUN_ID, 0, 0)
@@ -517,7 +519,7 @@ class TestSubmitWith500Recovery:
         }
         client = _FakeClient(
             post_responses=[_FakeResponse(500)],
-            get_responses=[[wrong_chunk_job]],
+            get_responses=[[wrong_chunk_job], [wrong_chunk_job], [wrong_chunk_job]],
         )
         with pytest.raises(SubmissionError):
             submit_with_500_recovery(client, {}, _config(), RUN_ID, 0, 0)
@@ -533,9 +535,67 @@ class TestSubmitWith500Recovery:
         }
         client = _FakeClient(
             post_responses=[_FakeResponse(500)],
-            get_responses=[[wrong_round_job]],
+            get_responses=[[wrong_round_job], [wrong_round_job], [wrong_round_job]],
         )
         with pytest.raises(SubmissionError):
             submit_with_500_recovery(client, {}, _config(), RUN_ID, 0, 0)
+
+    def test_500_job_metadata_as_json_string_recovers(self, monkeypatch):
+        """FTS3 may return job_metadata as a JSON string rather than a dict."""
+        import json as json_mod
+        import fts_framework.fts.submission as sub_mod
+        monkeypatch.setattr(sub_mod.time, "sleep", lambda s: None)
+        recovered_job = {
+            "job_id": "job-str-meta",
+            "submit_time": "2026-01-01T00:00:00",
+            "job_metadata": json_mod.dumps({
+                "run_id": RUN_ID,
+                "chunk_index": 0,
+                "retry_round": 0,
+            }),
+        }
+        client = _FakeClient(
+            post_responses=[_FakeResponse(500)],
+            get_responses=[[recovered_job]],
+        )
+        job_id = submit_with_500_recovery(client, {}, _config(), RUN_ID, 0, 0)
+        assert job_id == "job-str-meta"
+
+    def test_500_chunk_index_as_string_recovers(self, monkeypatch):
+        """FTS3 may return integer job_metadata fields as strings."""
+        import fts_framework.fts.submission as sub_mod
+        monkeypatch.setattr(sub_mod.time, "sleep", lambda s: None)
+        recovered_job = {
+            "job_id": "job-str-int",
+            "submit_time": "2026-01-01T00:00:00",
+            "job_metadata": {
+                "run_id": RUN_ID,
+                "chunk_index": "0",    # string instead of int
+                "retry_round": "0",
+            },
+        }
+        client = _FakeClient(
+            post_responses=[_FakeResponse(500)],
+            get_responses=[[recovered_job]],
+        )
+        job_id = submit_with_500_recovery(client, {}, _config(), RUN_ID, 0, 0)
+        assert job_id == "job-str-int"
+
+    def test_500_scan_retries_and_finds_job_on_second_attempt(self, monkeypatch):
+        """First scan returns empty; second scan finds the job."""
+        import fts_framework.fts.submission as sub_mod
+        monkeypatch.setattr(sub_mod.time, "sleep", lambda s: None)
+        recovered_job = {
+            "job_id": "job-late",
+            "submit_time": "2026-01-01T00:00:00",
+            "job_metadata": {"run_id": RUN_ID, "chunk_index": 0, "retry_round": 0},
+        }
+        client = _FakeClient(
+            post_responses=[_FakeResponse(500)],
+            get_responses=[[], [recovered_job]],  # miss, then hit
+        )
+        job_id = submit_with_500_recovery(client, {}, _config(), RUN_ID, 0, 0)
+        assert job_id == "job-late"
+        assert len(client.get_calls) == 2
 
 

@@ -28,6 +28,7 @@ Usage::
     job_id = submit_with_500_recovery(fts_client, payload, config, run_id, 0, 0)
 """
 
+import json
 import logging
 import time
 
@@ -206,6 +207,47 @@ def _build_job_metadata(config, run_id, chunk_index, retry_round, activity=None)
     return metadata
 
 
+def _parse_job_metadata(raw):
+    # type: (object) -> dict
+    """Return job_metadata as a dict regardless of whether FTS3 returned it
+    as a dict or as a JSON-encoded string (both are seen in the wild)."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except (ValueError, TypeError):
+            pass
+    return {}
+
+
+def _match_jobs(jobs, run_id, chunk_index, retry_round):
+    # type: (list, str, int, int) -> list
+    """Return jobs whose job_metadata matches (run_id, chunk_index, retry_round).
+
+    Tolerates FTS3 returning job_metadata as a JSON string and integer fields
+    as strings (both observed with older FTS3 REST versions).
+    """
+    matches = []
+    for j in jobs:
+        meta = _parse_job_metadata(j.get("job_metadata"))
+        if not meta:
+            continue
+        # Compare with type coercion: FTS3 may return integers as strings.
+        try:
+            meta_chunk = int(meta.get("chunk_index", -1))
+            meta_round = int(meta.get("retry_round", -1))
+        except (TypeError, ValueError):
+            continue
+        if (meta.get("run_id") == run_id
+                and meta_chunk == chunk_index
+                and meta_round == retry_round):
+            matches.append(j)
+    return matches
+
+
 def submit_with_500_recovery(fts_client, payload, config, run_id, chunk_index, retry_round):
     # type: (object, dict, dict, str, int, int) -> str
     """Submit one chunk payload and return the FTS3 job_id.
@@ -272,22 +314,32 @@ def submit_with_500_recovery(fts_client, payload, config, run_id, chunk_index, r
         _scan_path = "/jobs?time_window={}&state_in={}".format(
             scan_window_h, _states,
         )
-        jobs = fts_client.get(_scan_path)
 
-        if not isinstance(jobs, list):
-            logger.error(
-                "GET /jobs returned unexpected type %s during 500-recovery scan",
-                type(jobs).__name__,
-            )
-            jobs = []
+        # Retry the scan up to 3 times with backoff: FTS3 may commit the job
+        # to its DB slightly after returning 500, so one attempt is not enough.
+        _scan_delays = [0, 5, 15]
+        matches = []
+        for attempt, delay in enumerate(_scan_delays):
+            if delay:
+                logger.warning(
+                    "500-recovery: scan attempt %d found no match — "
+                    "waiting %ds before retry",
+                    attempt, delay,
+                )
+                time.sleep(delay)
 
-        matches = [
-            j for j in jobs
-            if isinstance(j.get("job_metadata"), dict)
-            and j["job_metadata"].get("run_id") == run_id
-            and j["job_metadata"].get("chunk_index") == chunk_index
-            and j["job_metadata"].get("retry_round") == retry_round
-        ]
+            jobs = fts_client.get(_scan_path)
+
+            if not isinstance(jobs, list):
+                logger.error(
+                    "GET /jobs returned unexpected type %s during 500-recovery scan",
+                    type(jobs).__name__,
+                )
+                jobs = []
+
+            matches = _match_jobs(jobs, run_id, chunk_index, retry_round)
+            if matches:
+                break
 
         if len(matches) == 1:
             job_id = matches[0]["job_id"]
