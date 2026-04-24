@@ -187,3 +187,181 @@ class TestExtensionHandling:
         # a.fits → index 0, b.dat → index 1 (alphabetical)
         assert destinations[0].endswith("testfile_000000.fits")
         assert destinations[1].endswith("testfile_000001.dat")
+
+
+# ---------------------------------------------------------------------------
+# Multi-destination weighted distribution
+# ---------------------------------------------------------------------------
+
+def _multi_config(destinations, test_label="campaign_test", preserve_extension=False):
+    return {
+        "run": {"test_label": test_label},
+        "transfer": {
+            "destinations": destinations,
+            "preserve_extension": preserve_extension,
+        },
+    }
+
+
+def _dests(*weights):
+    return [
+        {"prefix": "https://site-{}.example.org/data".format(i), "weight": w}
+        for i, w in enumerate(weights)
+    ]
+
+
+class TestMultiDestination:
+    def test_all_pfns_mapped(self):
+        pfns = ["https://src.example.org/f{:03d}".format(i) for i in range(100)]
+        mapping = plan(pfns, _multi_config(_dests(5, 3, 2)))
+        assert len(mapping) == 100
+
+    def test_proportional_distribution(self):
+        pfns = ["https://src.example.org/f{:03d}".format(i) for i in range(100)]
+        mapping = plan(pfns, _multi_config(_dests(5, 3, 2)))
+        counts = {}
+        for dst in mapping.values():
+            host = dst.split("/")[2]
+            counts[host] = counts.get(host, 0) + 1
+        assert counts["site-0.example.org"] == 50
+        assert counts["site-1.example.org"] == 30
+        assert counts["site-2.example.org"] == 20
+
+    def test_remainder_distributed(self):
+        # 10 files, weights [1,1,1] → 3,3,4 or similar — total must be 10
+        pfns = ["https://src.example.org/f{:02d}".format(i) for i in range(10)]
+        mapping = plan(pfns, _multi_config(_dests(1, 1, 1)))
+        assert len(mapping) == 10
+        counts = {}
+        for dst in mapping.values():
+            host = dst.split("/")[2]
+            counts[host] = counts.get(host, 0) + 1
+        assert sum(counts.values()) == 10
+
+    def test_per_destination_index_restarts(self):
+        pfns = ["https://src.example.org/f{:03d}".format(i) for i in range(4)]
+        # weights [1,1] → 2 files each
+        mapping = plan(pfns, _multi_config(_dests(1, 1)))
+        dsts = list(mapping.values())
+        # Each destination gets indices 000000 and 000001
+        site0 = [d for d in dsts if "site-0" in d]
+        site1 = [d for d in dsts if "site-1" in d]
+        assert any("testfile_000000" in d for d in site0)
+        assert any("testfile_000001" in d for d in site0)
+        assert any("testfile_000000" in d for d in site1)
+        assert any("testfile_000001" in d for d in site1)
+
+    def test_single_destination_in_list(self):
+        pfns = ["https://src.example.org/f{:03d}".format(i) for i in range(10)]
+        mapping = plan(pfns, _multi_config(_dests(1)))
+        assert len(mapping) == 10
+        assert all("site-0" in dst for dst in mapping.values())
+
+    def test_equal_weights_equal_distribution(self):
+        pfns = ["https://src.example.org/f{:03d}".format(i) for i in range(60)]
+        mapping = plan(pfns, _multi_config(_dests(2, 2, 2)))
+        counts = {}
+        for dst in mapping.values():
+            host = dst.split("/")[2]
+            counts[host] = counts.get(host, 0) + 1
+        assert all(c == 20 for c in counts.values())
+
+    def test_uses_destinations_prefix_not_dst_prefix(self):
+        pfns = ["https://src.example.org/f001"]
+        config = {
+            "run": {"test_label": "t"},
+            "transfer": {
+                "destinations": [{"prefix": "https://chosen.example.org/data", "weight": 1}],
+                "dst_prefix": "https://ignored.example.org/data",
+                "preserve_extension": False,
+            },
+        }
+        mapping = plan(pfns, config)
+        assert "chosen.example.org" in list(mapping.values())[0]
+        assert "ignored.example.org" not in list(mapping.values())[0]
+
+    def test_deterministic_across_calls(self):
+        pfns = ["https://src.example.org/f{:03d}".format(i) for i in range(30)]
+        cfg = _multi_config(_dests(2, 1))
+        m1 = plan(pfns, cfg)
+        m2 = plan(pfns, cfg)
+        assert list(m1.items()) == list(m2.items())
+
+    def test_preserve_extension_multi_destination(self):
+        pfns = ["https://src.example.org/file.dat"]
+        mapping = plan(pfns, _multi_config(_dests(1), preserve_extension=True))
+        assert list(mapping.values())[0].endswith(".dat")
+
+
+class TestMultiDestinationValidation:
+    def _base(self, tmp_path):
+        import yaml, os
+        data = {
+            "run":   {"test_label": "t"},
+            "fts":   {"endpoint": "https://fts.example.org:8446", "ssl_verify": True},
+            "tokens": {"fts_submit": "t", "source_read": "t", "dest_write": "t"},
+            "transfer": {"source_pfns_file": "s.txt"},
+        }
+        path = str(tmp_path / "config.yaml")
+        with open(path, "w") as fh:
+            yaml.dump(data, fh)
+        return path, data
+
+    def test_valid_destinations_accepted(self, tmp_path):
+        from fts_framework.config.loader import load
+        import yaml
+        path, data = self._base(tmp_path)
+        data["transfer"]["destinations"] = [
+            {"prefix": "https://site-a.example.org/data", "weight": 2},
+            {"prefix": "https://site-b.example.org/data", "weight": 1},
+        ]
+        with open(path, "w") as fh:
+            yaml.dump(data, fh)
+        config = load(path)
+        assert len(config["transfer"]["destinations"]) == 2
+
+    def test_missing_prefix_raises(self, tmp_path):
+        from fts_framework.config.loader import load
+        from fts_framework.exceptions import ConfigError
+        import yaml
+        path, data = self._base(tmp_path)
+        data["transfer"]["destinations"] = [{"prefix": "http://bad.example.org", "weight": 1}]
+        with open(path, "w") as fh:
+            yaml.dump(data, fh)
+        with pytest.raises(ConfigError, match="prefix"):
+            load(path)
+
+    def test_zero_weight_raises(self, tmp_path):
+        from fts_framework.config.loader import load
+        from fts_framework.exceptions import ConfigError
+        import yaml
+        path, data = self._base(tmp_path)
+        data["transfer"]["destinations"] = [
+            {"prefix": "https://site-a.example.org/data", "weight": 0}
+        ]
+        with open(path, "w") as fh:
+            yaml.dump(data, fh)
+        with pytest.raises(ConfigError, match="weight"):
+            load(path)
+
+    def test_empty_list_raises(self, tmp_path):
+        from fts_framework.config.loader import load
+        from fts_framework.exceptions import ConfigError
+        import yaml
+        path, data = self._base(tmp_path)
+        data["transfer"]["destinations"] = []
+        with open(path, "w") as fh:
+            yaml.dump(data, fh)
+        with pytest.raises(ConfigError, match="non-empty"):
+            load(path)
+
+    def test_neither_dst_prefix_nor_destinations_raises(self, tmp_path):
+        from fts_framework.config.loader import load
+        from fts_framework.exceptions import ConfigError
+        import yaml
+        path, data = self._base(tmp_path)
+        # No dst_prefix, no destinations
+        with open(path, "w") as fh:
+            yaml.dump(data, fh)
+        with pytest.raises(ConfigError, match="dst_prefix"):
+            load(path)

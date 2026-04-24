@@ -91,6 +91,7 @@ _DEFAULTS = {
         "job_metadata": {},
         "unmanaged_tokens": False,
         "source_prefix": None,
+        "destinations": None,
     },
     "concurrency": {
         "want_digest_workers": 8,
@@ -624,15 +625,55 @@ def _validate_tokens(config):
             )
 
 
+def _validate_destinations(destinations):
+    # type: (object) -> None
+    """Validate the transfer.destinations list."""
+    if not isinstance(destinations, list) or len(destinations) < 1:
+        raise ConfigError(
+            "transfer.destinations must be a non-empty list"
+        )
+    for i, entry in enumerate(destinations):
+        if not isinstance(entry, dict):
+            raise ConfigError(
+                "transfer.destinations[{}] must be a mapping with 'prefix' and 'weight'".format(i)
+            )
+        prefix = entry.get("prefix") or ""
+        if not (prefix.startswith("https://") or prefix.startswith("davs://")):
+            raise ConfigError(
+                "transfer.destinations[{}].prefix must be an https:// or davs:// URL, "
+                "got: {!r}".format(i, prefix)
+            )
+        weight = entry.get("weight")
+        if weight is None:
+            raise ConfigError(
+                "transfer.destinations[{}].weight is required".format(i)
+            )
+        if not isinstance(weight, int) or isinstance(weight, bool) or weight < 1:
+            raise ConfigError(
+                "transfer.destinations[{}].weight must be a positive integer, "
+                "got: {!r}".format(i, weight)
+            )
+
+
 def _validate_transfer(config):
     # type: (dict) -> None
     _require_str(config, "transfer", "source_pfns_file")
 
-    dst_prefix = _require_str(config, "transfer", "dst_prefix")
-    if not (dst_prefix.startswith("https://") or dst_prefix.startswith("davs://")):
-        raise ConfigError(
-            "transfer.dst_prefix must be an https:// or davs:// URL, got: {!r}".format(dst_prefix)
-        )
+    destinations = config["transfer"].get("destinations")
+    if destinations is not None:
+        _validate_destinations(destinations)
+    else:
+        dst_prefix = config["transfer"].get("dst_prefix")
+        if not dst_prefix:
+            raise ConfigError(
+                "transfer.dst_prefix is required when transfer.destinations is not set"
+            )
+        if not (dst_prefix.startswith("https://") or dst_prefix.startswith("davs://")):
+            raise ConfigError(
+                "transfer.dst_prefix must be an https:// or davs:// URL, got: {!r}".format(
+                    dst_prefix
+                )
+            )
 
     _require_int(
         config["transfer"]["chunk_size"], "transfer.chunk_size", min_val=1, max_val=200

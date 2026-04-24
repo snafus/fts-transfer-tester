@@ -36,8 +36,9 @@ def plan(pfns, config):
     """Compute and return the source→destination mapping for *pfns*.
 
     PFNs are sorted alphabetically to produce a stable, deterministic index.
-    Each source PFN maps to a destination URL following the framework naming
-    convention.
+    If ``transfer.destinations`` is set, files are distributed across
+    destinations proportionally by weight.  Otherwise ``transfer.dst_prefix``
+    is used for all files.
 
     Args:
         pfns (list[str]): Source PFN list as returned by ``inventory.loader``.
@@ -53,26 +54,78 @@ def plan(pfns, config):
     if not pfns:
         raise ConfigError("Cannot plan destinations: PFN list is empty.")
 
-    dst_prefix = config["transfer"]["dst_prefix"].rstrip("/")
-    test_label = config["run"]["test_label"]
+    destinations = config["transfer"].get("destinations")
+    if destinations:
+        return _plan_multi_destination(pfns, destinations, config)
+    return _plan_single_destination(pfns, config)
+
+
+def _plan_single_destination(pfns, config):
+    # type: (list, dict) -> OrderedDict
+    dst_prefix  = config["transfer"]["dst_prefix"].rstrip("/")
+    test_label  = config["run"]["test_label"]
     preserve_ext = config["transfer"]["preserve_extension"]
 
-    # Sort by Unicode code-point order (equivalent to ASCII byte order for all-ASCII
-    # HTTPS PFNs).  This is deterministic across all CPython implementations.
     sorted_pfns = sorted(pfns)
     mapping = OrderedDict()
-
     for idx, pfn in enumerate(sorted_pfns):
-        ext = _extract_extension(pfn) if preserve_ext else ""
+        ext  = _extract_extension(pfn) if preserve_ext else ""
         dest = "{}/{}/testfile_{:06d}{}".format(dst_prefix, test_label, idx, ext)
         mapping[pfn] = dest
 
     logger.info(
-        "Destination mapping computed: %d PFNs → %s/%s/testfile_NNNNNN",
-        len(mapping),
-        dst_prefix,
-        test_label,
+        "Destination mapping: %d PFNs → %s/%s/testfile_NNNNNN",
+        len(mapping), dst_prefix, test_label,
     )
+    return mapping
+
+
+def _plan_multi_destination(pfns, destinations, config):
+    # type: (list, list, dict) -> OrderedDict
+    """Distribute *pfns* across *destinations* proportionally by weight.
+
+    Files are partitioned into contiguous groups, one per destination, in
+    the order the destinations appear in the config.  Within each group the
+    per-destination file index restarts from zero so naming is compact.
+
+    Weight example: weights [5, 3, 2] with 100 files → 50, 30, 20 files.
+    Remainder files (from integer rounding) are assigned one each to the
+    destinations with the largest fractional parts, in config order.
+    """
+    test_label   = config["run"]["test_label"]
+    preserve_ext = config["transfer"]["preserve_extension"]
+
+    sorted_pfns = sorted(pfns)
+    n           = len(sorted_pfns)
+    total_w     = sum(d["weight"] for d in destinations)
+
+    # Compute exact float allocation then floor; distribute remainder by largest fraction
+    raw      = [n * d["weight"] / float(total_w) for d in destinations]
+    counts   = [int(r) for r in raw]
+    leftover = n - sum(counts)
+
+    # Give remainder slots to destinations with the largest fractional part
+    fractions = [(raw[i] - counts[i], i) for i in range(len(destinations))]
+    fractions.sort(key=lambda x: (-x[0], x[1]))
+    for k in range(leftover):
+        counts[fractions[k][1]] += 1
+
+    mapping = OrderedDict()
+    offset  = 0
+    for dest_cfg, count in zip(destinations, counts):
+        prefix = dest_cfg["prefix"].rstrip("/")
+        for local_idx, pfn in enumerate(sorted_pfns[offset:offset + count]):
+            ext  = _extract_extension(pfn) if preserve_ext else ""
+            dest = "{}/{}/testfile_{:06d}{}".format(
+                prefix, test_label, local_idx, ext
+            )
+            mapping[pfn] = dest
+        logger.info(
+            "Destination mapping: %d PFNs → %s/%s/testfile_NNNNNN (weight %d)",
+            count, prefix, test_label, dest_cfg["weight"],
+        )
+        offset += count
+
     return mapping
 
 
