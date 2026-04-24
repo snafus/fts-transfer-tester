@@ -12,6 +12,8 @@ Production-grade, automation-first FTS3 transfer benchmarking framework written 
 - [Quick Start](#quick-start)
 - [Inventory File Format](#inventory-file-format)
 - [Configuration Reference](#configuration-reference)
+  - [OIDC Token Generation](#oidc-token-generation)
+  - [Multi-Destination Transfers](#multi-destination-transfers)
 - [CLI Usage](#cli-usage)
 - [Sequence Runner](#sequence-runner)
 - [Programmatic Usage](#programmatic-usage)
@@ -42,6 +44,8 @@ Production-grade, automation-first FTS3 transfer benchmarking framework written 
 - **ADLER32 checksums** — fetched via WebDAV `Want-Digest` HEAD requests before submission, verified by FTS3 end-to-end
 - **SSL verification control** — `true | false | /path/to/ca-bundle.pem`
 - **Console, JSON, Markdown, HTML, CSV, and timeseries CSV reports**
+- **OIDC client credentials token generation** — automatically fetch bearer tokens from an OIDC provider using client credentials; scope templates resolved per-prefix; per-trial refresh in sequence runs
+- **Weighted multi-destination** — distribute files across multiple destination storage endpoints by weight for throughput saturation testing
 - **Parameter-sweep sequence runner** — run a baseline config across a sweep of parameters (cartesian or zip) with per-case trial repetition and resumption
 - **Python 3.6.8 compatible** — no dataclasses, no walrus operator, no numpy
 
@@ -194,16 +198,19 @@ Tokens can be supplied from multiple sources. When the same role is supplied by 
 | 2 | `--token` CLI flag (applies the same value to all three roles) |
 | 3 | `FTS_SUBMIT_TOKEN` / `SOURCE_READ_TOKEN` / `DEST_WRITE_TOKEN` environment variables |
 | 4 | `FTS_TOKEN` environment variable (applies to all three roles) |
-| 5 (lowest) | `tokens` section in the YAML config |
+| 5 | `tokens` section in the YAML config |
+| 6 (lowest) | OIDC client credentials grant (see [OIDC Token Generation](#oidc-token-generation)) |
 
-The `tokens` YAML section may be omitted entirely if all three roles are satisfied through environment variables or CLI flags.
+The `tokens` YAML section may be omitted entirely if all three roles are satisfied through higher-priority sources.  OIDC is only attempted for roles that are not already satisfied by a higher-priority source.
 
 ### `transfer`
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `source_pfns_file` | string | required | Path to source PFN list (see [Inventory file format](#inventory-file-format)) |
-| `dst_prefix` | string | required | Destination base URL (`https://` or `davs://`) |
+| `dst_prefix` | string | required* | Destination base URL (`https://` or `davs://`). *Required unless `destinations` is set. |
+| `source_prefix` | string \| null | `null` | Source storage base URL. Used only for OIDC scope template expansion (`{src_prefix_path}`). Not sent to FTS3. |
+| `destinations` | list | `null` | Weighted multi-destination list (see [Multi-Destination Transfers](#multi-destination-transfers)). Mutually exclusive with `dst_prefix`. |
 | `preserve_extension` | bool | `false` | If true, append original file extension to destination filename |
 | `checksum_algorithm` | string | `"adler32"` | Only ADLER32 is supported |
 | `verify_checksum` | string | `"both"` | FTS3 checksum mode: `both`, `source`, `target`, `none`. Modes `none` and `target` skip the pre-submission Want-Digest fetch. |
@@ -212,6 +219,7 @@ The `tokens` YAML section may be omitted entirely if all three roles are satisfi
 | `chunk_size` | int | `200` | Files per FTS3 job. Maximum 200 (FTS3 limit). |
 | `priority` | int | `3` | FTS3 job priority 1 (lowest) to 5 (highest) |
 | `activity` | string | `"default"` | FTS3 activity share label |
+| `unmanaged_tokens` | bool | `false` | (Not yet implemented — reserved for future FTS3 unmanaged-token mode.) |
 | `job_metadata` | dict | `{}` | User-supplied key/value pairs merged into `job_metadata`. Framework keys (`run_id`, `chunk_index`, `retry_round`, `test_label`) always take priority. |
 
 ### `concurrency`
@@ -264,6 +272,201 @@ Cleanup failures are logged as warnings and never abort the campaign. HTTP 404 o
 | `reports.html` | bool | `false` | Write `reports/report.html` |
 | `reports.csv` | bool | `true` | Write `reports/files.csv` (per-file metrics) |
 | `reports.timeseries_csv` | bool | `true` | Write `reports/timeseries.csv` (per-bucket throughput and concurrency) |
+
+---
+
+## OIDC Token Generation
+
+The framework can automatically fetch bearer tokens from an OIDC provider using the [client credentials grant](https://tools.ietf.org/html/rfc6749#section-4.4). This is the lowest-priority token source (priority 6); any higher-priority source (CLI flag, environment variable, YAML `tokens` section) takes precedence and suppresses the OIDC fetch for that role.
+
+### Configuration
+
+Add an `oidc` section to your campaign YAML:
+
+```yaml
+oidc:
+  enabled: true
+  env_file: ".env"    # optional; defaults to ".env" in the working directory
+
+  roles:
+    fts_submit:
+      token_endpoint: "https://iam.example.org/token"
+      client_id_var: "FTS_CLIENT_ID"          # env var holding the client ID
+      client_secret_var: "FTS_CLIENT_SECRET"  # env var holding the client secret
+      scope: "openid profile wlcg"
+      audience: "fts"                         # optional; omit if not required
+
+    source_read:
+      token_endpoint: "https://iam.example.org/token"
+      client_id_var: "SRC_CLIENT_ID"
+      client_secret_var: "SRC_CLIENT_SECRET"
+      scope: "openid storage.read:{src_prefix_path}"
+      audience: "https://source-storage.example.org"
+
+    dest_write:
+      token_endpoint: "https://iam.example.org/token"
+      client_id_var: "DST_CLIENT_ID"
+      client_secret_var: "DST_CLIENT_SECRET"
+      scope: "openid storage.modify:{dst_prefix_path} storage.create:{dst_prefix_path}"
+      audience: "https://dest-storage.example.org"
+```
+
+### Credential variables
+
+Client credentials are read from environment variables (never hard-coded in YAML). The framework resolves each `*_var` name in this order:
+
+1. `os.environ` (shell environment, takes priority)
+2. The `env_file` (defaults to `.env` in the working directory, parsed as `KEY=VALUE`)
+
+A `.env.example` file is provided in the repository root. Copy it and fill in your credentials:
+
+```bash
+cp .env.example .env
+$EDITOR .env   # add real credentials; .env is in .gitignore
+```
+
+Example `.env`:
+```bash
+FTS_CLIENT_ID=my-fts-client
+FTS_CLIENT_SECRET=supersecret
+SRC_CLIENT_ID=my-source-client
+SRC_CLIENT_SECRET=anothersecret
+DST_CLIENT_ID=my-dest-client
+DST_CLIENT_SECRET=yetanothersecret
+```
+
+### Scope templates
+
+Two placeholder strings are substituted in `scope` values at fetch time:
+
+| Template | Resolved to |
+|---|---|
+| `{dst_prefix_path}` | URL path component of `transfer.dst_prefix` (or the destination's `prefix` in multi-destination mode) |
+| `{src_prefix_path}` | URL path component of `transfer.source_prefix` |
+
+Example: if `transfer.dst_prefix` is `https://storage.example.org/data/test`, then `{dst_prefix_path}` resolves to `/data/test`.
+
+Multiple audiences are space-separated in the `scope` string (the standard WLCG convention). FTS3 does not have a dedicated audience field in the client credentials grant — include audiences in the `audience` parameter or embed them in the scope as required by your IAM.
+
+### Token forwarding to FTS3
+
+The framework passes storage tokens to FTS3 as per-file arrays in the job payload:
+
+```json
+{
+  "files": [
+    {
+      "sources": ["https://source.example.org/data/file.dat"],
+      "destinations": ["https://dest.example.org/test/testfile_000001.dat"],
+      "source_tokens": ["<source_read token>"],
+      "destination_tokens": ["<dest_write token>"]
+    }
+  ]
+}
+```
+
+This is the FTS3 3.14+ per-file token format. The FTS3 server manages token refresh for all forwarded tokens.
+
+### Verifying tokens before a run
+
+Use `--check-tokens` with `fts-sequence` to resolve and display token sources without submitting any transfers:
+
+```bash
+fts-sequence params.yaml --check-tokens
+```
+
+Output:
+```
+Token source plan:
+  Role             Source
+  ----             ------
+  fts_submit       OIDC (https://iam.example.org/token)
+  source_read      OIDC (https://iam.example.org/token)
+  dest_write       env:DEST_WRITE_TOKEN
+
+Fetching tokens...
+
+Token check result:
+  fts_submit       OK (1247 chars)  [OIDC (https://iam.example.org/token)]
+  source_read      OK (1183 chars)  [OIDC (https://iam.example.org/token)]
+  dest_write       OK (943 chars)   [env:DEST_WRITE_TOKEN]
+```
+
+### Per-trial token refresh in sequence runs
+
+When a sequence sweep overrides `transfer.dst_prefix` or `transfer.source_prefix`, the framework automatically re-fetches OIDC tokens for any role whose scope template depends on that key. This ensures each trial uses tokens scoped to the correct storage path.
+
+---
+
+## Multi-Destination Transfers
+
+To spread load across multiple destination storage endpoints, use `transfer.destinations` instead of `transfer.dst_prefix`. Files are partitioned into contiguous groups, one per destination, in config order.
+
+```yaml
+transfer:
+  source_pfns_file: "inventory.txt"
+  preserve_extension: false
+
+  destinations:
+    - prefix: "https://storage-uk.example.org/data/test"
+      weight: 5
+    - prefix: "https://storage-de.example.org/data/test"
+      weight: 3
+    - prefix: "https://storage-it.example.org/data/test"
+      weight: 2
+```
+
+**Weight semantics**: with weights `[5, 3, 2]` and 100 files, the destinations receive 50, 30, and 20 files respectively. Remainder files (from integer rounding) are distributed one each to destinations with the largest fractional allocation, in config order.
+
+**File naming**: each destination uses an independent per-destination index starting from zero:
+
+```
+https://storage-uk.example.org/data/test/run1/testfile_000000  …  testfile_000049
+https://storage-de.example.org/data/test/run1/testfile_000000  …  testfile_000029
+https://storage-it.example.org/data/test/run1/testfile_000000  …  testfile_000019
+```
+
+### Sequence sweep example
+
+To find the maximum aggregate throughput out of a source storage by varying the number of destination sites:
+
+```yaml
+# params.yaml
+baseline_config: "config/saturation_test.yaml"
+
+sequence:
+  trials: 3
+  label: "saturation"
+
+  sweep:
+    mode: zip
+    parameters:
+      transfer.max_files: [300, 300, 300]
+      transfer.destinations:
+        - - prefix: "https://storage-uk.example.org/data/test"
+            weight: 1
+        - - prefix: "https://storage-uk.example.org/data/test"
+            weight: 5
+          - prefix: "https://storage-de.example.org/data/test"
+            weight: 3
+          - prefix: "https://storage-it.example.org/data/test"
+            weight: 2
+        - - prefix: "https://storage-uk.example.org/data/test"
+            weight: 4
+          - prefix: "https://storage-de.example.org/data/test"
+            weight: 3
+          - prefix: "https://storage-it.example.org/data/test"
+            weight: 2
+          - prefix: "https://storage-us.example.org/data/test"
+            weight: 1
+
+  output:
+    base_dir: "sequences"
+```
+
+This runs three cases (1, 3, and 4 destinations) × 3 trials each. The `summary.csv` will show aggregate throughput per case, making it straightforward to identify the saturation point.
+
+**OIDC with multi-destination**: define one `dest_write` OIDC role. The `{dst_prefix_path}` template resolves to the first destination's prefix path for token fetch. If destinations span multiple IAMs or storage systems requiring different credentials, provide the `dest_write` token via a higher-priority source (CLI flag or environment variable) for each IAM separately.
 
 ---
 
@@ -326,8 +529,10 @@ fts-sequence <params> [options]
 
 | Argument | Description |
 |---|---|
-| `params` | Path to sequence parameter YAML file (required) |
+| `params` | Path to sequence parameter YAML file (required, unless `--rerun-failed` is given) |
+| `--check-tokens` | Resolve and display token sources, fetch OIDC tokens, then exit without running |
 | `--resume SEQUENCE_DIR` | Resume an interrupted sequence from its output directory |
+| `--rerun-failed SEQUENCE_DIR` | Reset all `failed` trials to `pending` and rerun them |
 | `--runs-dir DIR` | Base directory for individual run outputs (default: `runs/`) |
 | `--log-level LEVEL` | Logging verbosity (default: `INFO`) |
 | `--token TOKEN` | Shared bearer token for all roles |
@@ -388,6 +593,12 @@ fts-sequence params.yaml
 
 # Resume after interruption
 fts-sequence params.yaml --resume sequences/20260324_abc123_scale_test/
+
+# Reset all failed trials to pending and rerun them
+fts-sequence --rerun-failed sequences/20260324_abc123_scale_test/
+
+# Verify token sources and fetch OIDC tokens before committing to a run
+fts-sequence params.yaml --check-tokens
 ```
 
 ### Summary reports
@@ -746,7 +957,7 @@ Integration tests require a live FTS3 endpoint:
 FTS_INTEGRATION_ENDPOINT=https://fts.example.org:8446 pytest tests/integration/ -v
 ```
 
-**775 unit tests** cover all modules: config loader, inventory, destination planner, checksum fetcher, FTS client, submission (including 500-recovery), poller, collector, persistence, resume controller, metrics engine, cleanup manager, reporting renderer, runner orchestration, and sequence runner (loader, state, reporter).
+**891 unit tests** cover all modules: config loader (including OIDC resolution and scope templates), auth env loader, OIDC token fetch, inventory, destination planner (single and weighted multi-destination), checksum fetcher, FTS client, submission (including 500-recovery and per-file token forwarding), poller, collector, persistence, resume controller, metrics engine, cleanup manager, reporting renderer, runner orchestration, and sequence runner (loader, state, reporter, per-trial OIDC refresh).
 
 ---
 
@@ -757,9 +968,12 @@ sequence/runner.py  (sequence orchestration — wraps runner.py per trial)
 │
 runner.py  (single-campaign orchestration)
 │
-├── config/loader.py          Load and validate YAML config
+├── config/loader.py          Load and validate YAML config; resolve tokens (all 6 priority levels)
+├── auth/
+│   ├── env_loader.py         .env file parser; os.environ takes precedence
+│   └── oidc.py               OIDC client credentials grant (fetch_token)
 ├── inventory/loader.py       Load and validate source PFN list
-├── destination/planner.py    Compute deterministic src→dst mapping
+├── destination/planner.py    Compute deterministic src→dst mapping (single or weighted multi)
 ├── checksum/fetcher.py       Parallel ADLER32 Want-Digest HEAD requests
 ├── fts/
 │   ├── client.py             Authenticated requests.Session builder
@@ -834,7 +1048,7 @@ FTSFrameworkError
 - Tape/staging workflows (`STAGING` state → treated as unsupported error)
 - XRootD protocol operations
 - SRM, gsiftp, dCache endpoints
-- Token refresh (delegated to FTS3 server; framework has no OIDC logic)
+- Token refresh for in-flight transfers (delegated to FTS3 server; the framework only fetches tokens once at campaign start, or once per trial in sequence runs)
 - FTS3 link optimizer configuration
 - Multi-protocol checksum algorithms other than ADLER32
 - Real-time streaming metrics
