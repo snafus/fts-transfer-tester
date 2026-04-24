@@ -748,3 +748,202 @@ class TestTokenResolution:
         assert config["tokens"]["fts_submit"] == "cli_submit"
         assert config["tokens"]["source_read"] == "env_read"
         assert config["tokens"]["dest_write"] == "env_shared"
+
+
+# ---------------------------------------------------------------------------
+# OIDC token resolution
+# ---------------------------------------------------------------------------
+
+class TestOidcTokenResolution:
+    """Tests for OIDC client-credentials token generation (6th priority)."""
+
+    def _oidc_config(self, tmp_path, roles=None):
+        """Return (path, data) with oidc section enabled."""
+        data = {
+            "run":   {"test_label": "oidc_test"},
+            "fts":   {"endpoint": "https://fts.example.org:8446", "ssl_verify": True},
+            "tokens": {},
+            "transfer": {
+                "source_pfns_file": "s.txt",
+                "dst_prefix": "https://dst.example.org/data",
+            },
+            "oidc": {
+                "enabled": True,
+                "env_file": str(tmp_path / "nonexistent.env"),
+                "roles": roles or {
+                    "fts_submit":  {
+                        "token_endpoint":   "https://iam.example.org/token",
+                        "client_id_var":    "FTS_CLIENT_ID",
+                        "client_secret_var": "FTS_CLIENT_SECRET",
+                        "scope":            "openid profile",
+                    },
+                    "source_read": {
+                        "token_endpoint":   "https://iam.example.org/token",
+                        "client_id_var":    "SRC_CLIENT_ID",
+                        "client_secret_var": "SRC_CLIENT_SECRET",
+                        "scope":            "openid storage.read:/",
+                    },
+                    "dest_write": {
+                        "token_endpoint":   "https://iam.example.org/token",
+                        "client_id_var":    "DST_CLIENT_ID",
+                        "client_secret_var": "DST_CLIENT_SECRET",
+                        "scope":            "openid storage.modify:/",
+                    },
+                },
+            },
+        }
+        import os
+        path = str(tmp_path / "config.yaml")
+        write_yaml(data, path)
+        return path, data
+
+    def test_oidc_tokens_injected_when_enabled(self, tmp_path, monkeypatch):
+        import responses as rsps_lib
+        monkeypatch.setenv("FTS_CLIENT_ID",    "cid_fts")
+        monkeypatch.setenv("FTS_CLIENT_SECRET", "csec_fts")
+        monkeypatch.setenv("SRC_CLIENT_ID",    "cid_src")
+        monkeypatch.setenv("SRC_CLIENT_SECRET", "csec_src")
+        monkeypatch.setenv("DST_CLIENT_ID",    "cid_dst")
+        monkeypatch.setenv("DST_CLIENT_SECRET", "csec_dst")
+
+        path, _ = self._oidc_config(tmp_path)
+        with rsps_lib.RequestsMock() as rsps:
+            rsps.add(rsps_lib.POST, "https://iam.example.org/token",
+                     json={"access_token": "tok_fts"}, status=200)
+            rsps.add(rsps_lib.POST, "https://iam.example.org/token",
+                     json={"access_token": "tok_src"}, status=200)
+            rsps.add(rsps_lib.POST, "https://iam.example.org/token",
+                     json={"access_token": "tok_dst"}, status=200)
+            config = load(path)
+
+        assert config["tokens"]["fts_submit"]  == "tok_fts"
+        assert config["tokens"]["source_read"] == "tok_src"
+        assert config["tokens"]["dest_write"]  == "tok_dst"
+
+    def test_existing_token_not_overwritten_by_oidc(self, tmp_path, monkeypatch):
+        """If a role already has a token from CLI/env/YAML, OIDC is skipped for it."""
+        import responses as rsps_lib
+        monkeypatch.setenv("SRC_CLIENT_ID",    "cid_src")
+        monkeypatch.setenv("SRC_CLIENT_SECRET", "csec_src")
+        monkeypatch.setenv("DST_CLIENT_ID",    "cid_dst")
+        monkeypatch.setenv("DST_CLIENT_SECRET", "csec_dst")
+
+        path, _ = self._oidc_config(tmp_path)
+        with rsps_lib.RequestsMock() as rsps:
+            rsps.add(rsps_lib.POST, "https://iam.example.org/token",
+                     json={"access_token": "tok_src"}, status=200)
+            rsps.add(rsps_lib.POST, "https://iam.example.org/token",
+                     json={"access_token": "tok_dst"}, status=200)
+            config = load(path, fts_submit_token="cli_fts_token")
+
+        assert config["tokens"]["fts_submit"]  == "cli_fts_token"
+        assert config["tokens"]["source_read"] == "tok_src"
+        assert config["tokens"]["dest_write"]  == "tok_dst"
+
+    def test_oidc_disabled_skips_fetch(self, tmp_path):
+        """When oidc.enabled=False, no token fetch is attempted."""
+        data = {
+            "run":    {"test_label": "t"},
+            "fts":    {"endpoint": "https://fts.example.org:8446", "ssl_verify": True},
+            "tokens": {"fts_submit": "t", "source_read": "t", "dest_write": "t"},
+            "transfer": {
+                "source_pfns_file": "s.txt",
+                "dst_prefix": "https://dst.example.org/data",
+            },
+            "oidc": {"enabled": False},
+        }
+        path = str(tmp_path / "config.yaml")
+        write_yaml(data, path)
+        # No HTTP mock — would fail if any request is made
+        config = load(path)
+        assert config["tokens"]["fts_submit"] == "t"
+
+    def test_missing_client_id_var_raises(self, tmp_path, monkeypatch):
+        """Missing env var for client_id raises ConfigError."""
+        # Don't set FTS_CLIENT_ID — only set source/dest vars
+        monkeypatch.setenv("SRC_CLIENT_ID",    "cid_src")
+        monkeypatch.setenv("SRC_CLIENT_SECRET", "csec_src")
+        monkeypatch.setenv("DST_CLIENT_ID",    "cid_dst")
+        monkeypatch.setenv("DST_CLIENT_SECRET", "csec_dst")
+        monkeypatch.delenv("FTS_CLIENT_ID",    raising=False)
+        monkeypatch.delenv("FTS_CLIENT_SECRET", raising=False)
+
+        path, _ = self._oidc_config(tmp_path)
+        with pytest.raises(ConfigError, match="client_id_var"):
+            load(path)
+
+    def test_invalid_token_endpoint_raises(self, tmp_path):
+        """Non-https token_endpoint raises ConfigError during validation."""
+        path, _ = self._oidc_config(tmp_path, roles={
+            "fts_submit": {
+                "token_endpoint":   "http://insecure.example.org/token",
+                "client_id_var":    "FTS_CLIENT_ID",
+                "client_secret_var": "FTS_CLIENT_SECRET",
+                "scope":            "openid",
+            },
+        })
+        with pytest.raises(ConfigError, match="https://"):
+            load(path)
+
+    def test_env_file_values_used_for_credentials(self, tmp_path, monkeypatch):
+        """Credentials can be sourced from .env file."""
+        import responses as rsps_lib
+        env_file = str(tmp_path / ".env")
+        with open(env_file, "w") as fh:
+            fh.write("FTS_CLIENT_ID=file_cid\nFTS_CLIENT_SECRET=file_csec\n")
+            fh.write("SRC_CLIENT_ID=file_src_cid\nSRC_CLIENT_SECRET=file_src_csec\n")
+            fh.write("DST_CLIENT_ID=file_dst_cid\nDST_CLIENT_SECRET=file_dst_csec\n")
+
+        monkeypatch.delenv("FTS_CLIENT_ID",    raising=False)
+        monkeypatch.delenv("FTS_CLIENT_SECRET", raising=False)
+        monkeypatch.delenv("SRC_CLIENT_ID",    raising=False)
+        monkeypatch.delenv("SRC_CLIENT_SECRET", raising=False)
+        monkeypatch.delenv("DST_CLIENT_ID",    raising=False)
+        monkeypatch.delenv("DST_CLIENT_SECRET", raising=False)
+
+        # Build config pointing to the .env file we just wrote
+        roles = {
+            "fts_submit":  {
+                "token_endpoint":   "https://iam.example.org/token",
+                "client_id_var":    "FTS_CLIENT_ID",
+                "client_secret_var": "FTS_CLIENT_SECRET",
+                "scope":            "openid",
+            },
+            "source_read": {
+                "token_endpoint":   "https://iam.example.org/token",
+                "client_id_var":    "SRC_CLIENT_ID",
+                "client_secret_var": "SRC_CLIENT_SECRET",
+                "scope":            "openid storage.read:/",
+            },
+            "dest_write": {
+                "token_endpoint":   "https://iam.example.org/token",
+                "client_id_var":    "DST_CLIENT_ID",
+                "client_secret_var": "DST_CLIENT_SECRET",
+                "scope":            "openid storage.modify:/",
+            },
+        }
+        data = {
+            "run":   {"test_label": "oidc_env_file"},
+            "fts":   {"endpoint": "https://fts.example.org:8446", "ssl_verify": True},
+            "tokens": {},
+            "transfer": {
+                "source_pfns_file": "s.txt",
+                "dst_prefix": "https://dst.example.org/data",
+            },
+            "oidc": {"enabled": True, "env_file": env_file, "roles": roles},
+        }
+        path = str(tmp_path / "config.yaml")
+        write_yaml(data, path)
+
+        with rsps_lib.RequestsMock() as rsps:
+            rsps.add(rsps_lib.POST, "https://iam.example.org/token",
+                     json={"access_token": "tok_fts"}, status=200)
+            rsps.add(rsps_lib.POST, "https://iam.example.org/token",
+                     json={"access_token": "tok_src"}, status=200)
+            rsps.add(rsps_lib.POST, "https://iam.example.org/token",
+                     json={"access_token": "tok_dst"}, status=200)
+            config = load(path)
+
+        assert config["tokens"]["fts_submit"]  == "tok_fts"
+        assert config["tokens"]["source_read"] == "tok_src"
+        assert config["tokens"]["dest_write"]  == "tok_dst"

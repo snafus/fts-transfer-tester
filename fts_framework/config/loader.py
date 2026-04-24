@@ -31,6 +31,8 @@ Token resolution order (highest wins)
    ``DEST_WRITE_TOKEN``.
 4. Shared environment variable ``FTS_TOKEN`` — applies to all three roles.
 5. Values in the YAML ``tokens`` section.
+6. OIDC client-credentials generation (``oidc.enabled: true``) — fires for
+   any role still unset after steps 1–5.
 
 The YAML ``tokens`` section may be omitted entirely if all three roles are
 supplied through environment variables or keyword arguments.
@@ -42,6 +44,8 @@ import os
 import yaml
 
 from fts_framework.exceptions import ConfigError
+from fts_framework.auth import env_loader as _env_loader
+from fts_framework.auth import oidc as _oidc
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +70,11 @@ _ALLOWED_VERIFY_CHECKSUM = ("both", "source", "target", "none")
 # ---------------------------------------------------------------------------
 
 _DEFAULTS = {
+    "oidc": {
+        "enabled": False,
+        "env_file": ".env",
+        "roles": {},
+    },
     "run": {
         "run_id": None,
     },
@@ -201,6 +210,8 @@ def load(path, token=None, fts_submit_token=None,
         raw["tokens"] = tokens_section
 
     config = _apply_defaults(raw)
+    _validate_oidc(config)
+    _resolve_oidc_tokens(config)
     _validate(config)
 
     logger.info(
@@ -309,6 +320,65 @@ def _apply_defaults(raw):
     return result
 
 
+def _resolve_oidc_tokens(config):
+    # type: (dict) -> None
+    """Fetch OIDC tokens for any role not yet satisfied by higher-priority sources.
+
+    Only runs when ``oidc.enabled`` is True.  Tokens are injected directly
+    into ``config["tokens"]`` before validation.
+    """
+    oidc_cfg = config.get("oidc", {})
+    if not oidc_cfg.get("enabled"):
+        return
+
+    tokens = config.setdefault("tokens", {})
+    roles_cfg = oidc_cfg.get("roles") or {}
+    if not roles_cfg:
+        return
+
+    ssl_verify = config.get("fts", {}).get("ssl_verify", True)
+
+    # Load .env file once; ignore missing file if no role needs it
+    env_file_vars = {}
+    env_file = oidc_cfg.get("env_file") or ".env"
+    if os.path.isfile(env_file):
+        try:
+            env_file_vars = _env_loader.load_env_file(env_file)
+        except IOError as exc:
+            raise ConfigError("Cannot read oidc.env_file {!r}: {}".format(env_file, exc))
+
+    for role in ("fts_submit", "source_read", "dest_write"):
+        if tokens.get(role):
+            continue
+        role_cfg = roles_cfg.get(role)
+        if not role_cfg:
+            continue
+
+        endpoint    = role_cfg.get("token_endpoint") or ""
+        id_var      = role_cfg.get("client_id_var") or ""
+        secret_var  = role_cfg.get("client_secret_var") or ""
+        scope       = role_cfg.get("scope") or ""
+
+        client_id     = _env_loader.resolve_var(id_var, os.environ, env_file_vars) if id_var else None
+        client_secret = _env_loader.resolve_var(secret_var, os.environ, env_file_vars) if secret_var else None
+
+        if not client_id:
+            raise ConfigError(
+                "OIDC role {!r}: client_id_var {!r} not set in environment or env_file".format(
+                    role, id_var
+                )
+            )
+        if not client_secret:
+            raise ConfigError(
+                "OIDC role {!r}: client_secret_var {!r} not set in environment or env_file".format(
+                    role, secret_var
+                )
+            )
+
+        logger.info("Fetching OIDC token for role %r from %s", role, endpoint)
+        tokens[role] = _oidc.fetch_token(endpoint, client_id, client_secret, scope, ssl_verify)
+
+
 def _validate(config):
     # type: (dict) -> None
     """Validate required fields, types, and value constraints.
@@ -321,6 +391,7 @@ def _validate(config):
     """
     _validate_run(config)
     _validate_fts(config)
+    _validate_oidc(config)
     _validate_tokens(config)
     _validate_transfer(config)
     _validate_concurrency(config)
@@ -410,6 +481,33 @@ def _validate_fts(config):
             raise ConfigError(
                 "fts.ssl_verify CA bundle path does not exist: {!r}".format(ssl_verify)
             )
+
+
+def _validate_oidc(config):
+    # type: (dict) -> None
+    """Validate the oidc section structure when enabled."""
+    oidc_cfg = config.get("oidc", {})
+    if not oidc_cfg.get("enabled"):
+        return
+
+    roles_cfg = oidc_cfg.get("roles") or {}
+    for role, role_cfg in roles_cfg.items():
+        if not isinstance(role_cfg, dict):
+            raise ConfigError(
+                "oidc.roles.{} must be a mapping, got {!r}".format(role, type(role_cfg).__name__)
+            )
+        endpoint = role_cfg.get("token_endpoint") or ""
+        if not endpoint.startswith("https://"):
+            raise ConfigError(
+                "oidc.roles.{}.token_endpoint must be an https:// URL, got: {!r}".format(
+                    role, endpoint
+                )
+            )
+        for field in ("client_id_var", "client_secret_var", "scope"):
+            if not role_cfg.get(field):
+                raise ConfigError(
+                    "oidc.roles.{}.{} is required".format(role, field)
+                )
 
 
 def _validate_tokens(config):
