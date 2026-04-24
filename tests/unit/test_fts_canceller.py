@@ -197,3 +197,17 @@ class TestCollectJobIds:
         seq_dir, rdir = _make_sequence(tmp_path, [])
         ids = collect_job_ids_from_sequence(seq_dir)
         assert ids == []
+
+    def test_missing_state_json_falls_back_to_runs_dir(self, tmp_path):
+        rdir = str(tmp_path / "runs")
+        os.makedirs(rdir)
+        _make_manifest(rdir, "run-1", [{"job_id": "job-early", "terminal": False}])
+        seq_dir = str(tmp_path / "seq_no_state")
+        # seq_dir does not exist — state.json definitely absent
+        ids = collect_job_ids_from_sequence(seq_dir, runs_dir=rdir)
+        assert ids == ["job-early"]
+
+    def test_missing_state_json_missing_runs_dir_returns_empty(self, tmp_path):
+        seq_dir = str(tmp_path / "seq_no_state")
+        ids = collect_job_ids_from_sequence(seq_dir, runs_dir=str(tmp_path / "no_runs"))
+        assert ids == []

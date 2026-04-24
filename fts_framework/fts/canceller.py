@@ -55,6 +55,38 @@ def cancel_jobs(job_ids, fts_client):
     return results
 
 
+def _collect_from_runs_dir(runs_dir):
+    # type: (str) -> list
+    """Scan *runs_dir* for every manifest.json and return non-terminal job IDs."""
+    import json
+    import os
+
+    if not os.path.isdir(runs_dir):
+        logger.warning("runs_dir %s does not exist — no jobs to cancel", runs_dir)
+        return []
+
+    job_ids = []
+    seen = set()
+    for entry in sorted(os.listdir(runs_dir)):
+        manifest_path = os.path.join(runs_dir, entry, "manifest.json")
+        if not os.path.exists(manifest_path):
+            continue
+        try:
+            with open(manifest_path) as fh:
+                manifest = json.load(fh)
+        except Exception as exc:
+            logger.warning("Cannot read manifest %s: %s", manifest_path, exc)
+            continue
+        for subjob in manifest.get("subjobs", []):
+            jid = subjob.get("job_id")
+            if not jid or jid in seen:
+                continue
+            seen.add(jid)
+            if not subjob.get("terminal", False):
+                job_ids.append(jid)
+    return job_ids
+
+
 def collect_job_ids_from_sequence(sequence_dir, runs_dir="runs"):
     # type: (str, str) -> list
     """Walk a sequence directory and return all non-terminal job IDs.
@@ -75,6 +107,14 @@ def collect_job_ids_from_sequence(sequence_dir, runs_dir="runs"):
     import os
 
     state_path = os.path.join(sequence_dir, "state.json")
+    if not os.path.exists(state_path):
+        logger.warning(
+            "No state.json found in %s — sequence may not have initialised yet; "
+            "falling back to scanning runs_dir: %s",
+            sequence_dir, runs_dir,
+        )
+        return _collect_from_runs_dir(runs_dir)
+
     with open(state_path) as fh:
         state = json.load(fh)
 
