@@ -29,6 +29,7 @@ _SUMMARY_METRICS = [
     ("files_succeeded",                   "Files Succeeded"),
     ("files_failed",                      "Files Failed"),
     ("success_rate",                      "Success Rate"),
+    ("peak_concurrency",                  "Peak Concurrency"),
     ("aggregate_throughput_bytes_per_s",  "Agg TP (MB/s)"),
     ("throughput_mean",                   "TP Mean (MB/s)"),
     ("throughput_p50",                    "TP p50 (MB/s)"),
@@ -258,15 +259,17 @@ def _write_markdown(sequence_dir, rows, aggregates, state):
     # Individual runs table
     lines.append("## Individual Runs")
     lines.append("")
-    lines.append("| Case | Trial | Run ID | Status | "
+    lines.append("| Case | Trial | Run ID | Status | Files | Max Conc | "
                  "Success Rate | Agg TP (MB/s) | TP Mean (MB/s) | Wall (s) |")
-    lines.append("|---|---|---|---|---|---|---|---|")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|")
     for r in rows:
-        lines.append("| {} | {} | {} | {} | {} | {} | {} | {} |".format(
+        lines.append("| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
             r["case_index"],
             r["trial_index"],
             r["run_id"] or "-",
             r["status"],
+            _fmt_val("files_total",                      r.get("files_total")),
+            _fmt_val("peak_concurrency",                 r.get("peak_concurrency")),
             _fmt_val("success_rate",                     r.get("success_rate")),
             _fmt_val("aggregate_throughput_bytes_per_s", r.get("aggregate_throughput_bytes_per_s")),
             _fmt_val("throughput_mean",                  r.get("throughput_mean")),

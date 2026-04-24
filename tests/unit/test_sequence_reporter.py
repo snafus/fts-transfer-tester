@@ -225,6 +225,23 @@ class TestMarkdownReport:
                 content = fh.read()
         assert "Individual Runs" in content
 
+    def test_individual_runs_files_and_concurrency(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runs_dir = os.path.join(tmp, "runs")
+            os.makedirs(runs_dir)
+            state = _make_state(n_cases=1, trials=1)
+            _mark_completed_inmem(state, 0, 0, "run_abc")
+            _write_snapshot(runs_dir, "run_abc", _default_snapshot(
+                files_total=200, peak_concurrency=12,
+            ))
+            seq_reporter.generate_summary(tmp, state, runs_dir=runs_dir)
+            with open(os.path.join(tmp, "reports", "summary.md")) as fh:
+                content = fh.read()
+        assert "Files" in content
+        assert "Max Conc" in content
+        assert "200" in content
+        assert "12" in content
+
     def test_label_shown_when_present(self):
         with tempfile.TemporaryDirectory() as tmp:
             state = _make_state(label="my_label")
