@@ -63,9 +63,9 @@ def _write_snapshot(runs_dir, run_id, snapshot):
 def _default_snapshot(**overrides):
     snap = {
         "run_id":           "run_000",
-        "files_total":      100,
-        "files_succeeded":  95,
-        "files_failed":     5,
+        "total_files":      100,
+        "finished":         95,
+        "failed":           5,
         "success_rate":     0.95,
         "throughput_mean":  50e6,   # 50 MB/s in bytes/s
         "throughput_p50":   48e6,
@@ -232,7 +232,7 @@ class TestMarkdownReport:
             state = _make_state(n_cases=1, trials=1)
             _mark_completed_inmem(state, 0, 0, "run_abc")
             _write_snapshot(runs_dir, "run_abc", _default_snapshot(
-                files_total=200, peak_concurrency=12,
+                total_files=200, peak_concurrency=12,
             ))
             seq_reporter.generate_summary(tmp, state, runs_dir=runs_dir)
             with open(os.path.join(tmp, "reports", "summary.md")) as fh:

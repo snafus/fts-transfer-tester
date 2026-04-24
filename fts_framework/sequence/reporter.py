@@ -25,9 +25,9 @@ from fts_framework.sequence.state import COMPLETED, FAILED
 
 # Snapshot keys to include in summary reports, with display labels.
 _SUMMARY_METRICS = [
-    ("files_total",                       "Files Total"),
-    ("files_succeeded",                   "Files Succeeded"),
-    ("files_failed",                      "Files Failed"),
+    ("total_files",                       "Files Total"),
+    ("finished",                          "Files Succeeded"),
+    ("failed",                            "Files Failed"),
     ("success_rate",                      "Success Rate"),
     ("peak_concurrency",                  "Peak Concurrency"),
     ("aggregate_throughput_bytes_per_s",  "Agg TP (MB/s)"),
@@ -118,7 +118,7 @@ def _aggregate_cases(state, rows):
         case_rows = [r for r in rows if r["case_index"] == ci]
         completed = [
             r for r in case_rows
-            if r["status"] == COMPLETED and r.get("files_total") is not None
+            if r["status"] == COMPLETED and r.get("total_files") is not None
         ]
         failed_count = sum(1 for r in case_rows if r["status"] == FAILED)
 
@@ -297,7 +297,7 @@ def _write_markdown(sequence_dir, rows, aggregates, state):
             r["trial_index"],
             r["run_id"] or "-",
             r["status"],
-            _fmt_val("files_total",                      r.get("files_total")),
+            _fmt_val("total_files",                      r.get("total_files")),
             _fmt_val("peak_concurrency",                 r.get("peak_concurrency")),
             _fmt_val("success_rate",                     r.get("success_rate")),
             _fmt_val("aggregate_throughput_bytes_per_s", r.get("aggregate_throughput_bytes_per_s")),
