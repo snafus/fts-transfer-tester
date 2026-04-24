@@ -7,6 +7,7 @@ Usage::
 
     fts-sequence params.yaml
     fts-sequence params.yaml --resume sequences/20260324_abc123_scale_test/
+    fts-sequence --rerun-failed sequences/20260324_abc123_scale_test/
     fts-sequence params.yaml --runs-dir /data/runs --log-level DEBUG
 
 Token resolution follows the same five-level priority as ``fts-run``; see
@@ -15,9 +16,11 @@ the README for details.
 
 import argparse
 import logging
+import os
 import sys
 
 from fts_framework.persistence.store import _DEFAULT_RUNS_DIR
+from fts_framework.sequence import state as seq_state
 from fts_framework.sequence.runner import run_sequence
 
 
@@ -30,14 +33,26 @@ def main():
     )
     parser.add_argument(
         "params",
-        help="Path to sequence parameter YAML file",
+        nargs="?",
+        default=None,
+        help="Path to sequence parameter YAML file (optional with --rerun-failed,"
+             " which defaults to <SEQUENCE_DIR>/params.yaml)",
     )
-    parser.add_argument(
+
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--resume",
         metavar="SEQUENCE_DIR",
         default=None,
         help="Resume an interrupted sequence from its output directory",
     )
+    mode.add_argument(
+        "--rerun-failed",
+        metavar="SEQUENCE_DIR",
+        default=None,
+        help="Reset all failed trials to pending and rerun them",
+    )
+
     parser.add_argument(
         "--runs-dir",
         default=_DEFAULT_RUNS_DIR,
@@ -85,10 +100,33 @@ def main():
         stream=sys.stderr,
     )
 
+    log = logging.getLogger(__name__)
+
+    # Resolve params file and resume_dir from the chosen mode.
+    resume_dir = args.resume
+
+    if args.rerun_failed:
+        seq_dir = args.rerun_failed
+        params_file = args.params or os.path.join(seq_dir, "params.yaml")
+        try:
+            state = seq_state.load(seq_dir)
+            n_reset = seq_state.reset_failed_to_pending(seq_dir, state)
+            log.info("Marked %d failed trial(s) as pending for rerun", n_reset)
+            if n_reset == 0:
+                log.warning("No failed trials found in %s — nothing to rerun", seq_dir)
+        except Exception as exc:
+            log.error("Failed to reset state in %s: %s", seq_dir, exc)
+            sys.exit(1)
+        resume_dir = seq_dir
+    else:
+        params_file = args.params
+        if params_file is None:
+            parser.error("params is required unless --rerun-failed is given")
+
     try:
         sequence_dir = run_sequence(
-            params_file=args.params,
-            resume_dir=args.resume,
+            params_file=params_file,
+            resume_dir=resume_dir,
             runs_dir=args.runs_dir,
             token=args.token,
             fts_submit_token=args.fts_submit_token,
@@ -98,9 +136,7 @@ def main():
         print("Sequence complete: {}".format(sequence_dir))
         sys.exit(0)
     except Exception as exc:
-        logging.getLogger(__name__).error(
-            "Sequence failed: %s", exc, exc_info=True,
-        )
+        log.error("Sequence failed: %s", exc, exc_info=True)
         sys.exit(1)
 
 

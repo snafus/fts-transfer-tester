@@ -159,6 +159,34 @@ def mark_failed(sequence_dir, state, case_index, trial_index, error):
     _write(sequence_dir, state)
 
 
+def reset_failed_to_pending(sequence_dir, state):
+    # type: (str, dict) -> int
+    """Reset all *failed* trials to *pending* so they will be retried.
+
+    Clears ``run_id``, ``error``, and ``completed_at`` on each reset trial.
+    Writes the updated state to disk atomically.
+
+    Args:
+        sequence_dir (str): Sequence output directory.
+        state (dict): Current state dict (mutated in place).
+
+    Returns:
+        int: Number of trials reset.
+    """
+    count = 0
+    for case in state["cases"]:
+        for trial in case["trials"]:
+            if trial["status"] == FAILED:
+                trial["status"] = PENDING
+                trial["run_id"] = None
+                trial["error"] = None
+                trial["completed_at"] = None
+                count += 1
+    if count:
+        _write(sequence_dir, state)
+    return count
+
+
 def pending_trials(state):
     # type: (dict) -> list
     """Return list of ``(case_index, trial_index)`` that need to run.

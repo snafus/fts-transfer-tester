@@ -16,6 +16,7 @@ from fts_framework.sequence.state import (
     mark_failed,
     mark_running,
     pending_trials,
+    reset_failed_to_pending,
 )
 
 
@@ -198,3 +199,72 @@ class TestPendingTrials:
             mark_completed(tmp, state, 0, 0)
         result = pending_trials(state)
         assert result == [(0, 1), (1, 0), (1, 1)]
+
+
+# ---------------------------------------------------------------------------
+# reset_failed_to_pending
+# ---------------------------------------------------------------------------
+
+class TestResetFailedToPending:
+    def test_failed_trial_reset_to_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = create(tmp, "s", _seq_params(), _make_cases(1), trials=1)
+            mark_failed(tmp, state, 0, 0, "boom")
+            n = reset_failed_to_pending(tmp, state)
+        assert n == 1
+        assert state["cases"][0]["trials"][0]["status"] == PENDING
+        assert state["cases"][0]["trials"][0]["run_id"] is None
+        assert state["cases"][0]["trials"][0]["error"] is None
+
+    def test_completed_trial_not_touched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = create(tmp, "s", _seq_params(), _make_cases(1), trials=2)
+            mark_completed(tmp, state, 0, 0)
+            mark_failed(tmp, state, 0, 1, "err")
+            reset_failed_to_pending(tmp, state)
+        assert state["cases"][0]["trials"][0]["status"] == COMPLETED
+
+    def test_returns_count_of_reset_trials(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = create(tmp, "s", _seq_params(), _make_cases(2), trials=2)
+            mark_failed(tmp, state, 0, 0, "e")
+            mark_failed(tmp, state, 1, 1, "e")
+            n = reset_failed_to_pending(tmp, state)
+        assert n == 2
+
+    def test_no_failed_trials_returns_zero(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = create(tmp, "s", _seq_params(), _make_cases(1), trials=1)
+            mark_completed(tmp, state, 0, 0)
+            n = reset_failed_to_pending(tmp, state)
+        assert n == 0
+
+    def test_reset_trials_appear_in_pending_trials(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = create(tmp, "s", _seq_params(), _make_cases(1), trials=2)
+            mark_completed(tmp, state, 0, 0)
+            mark_failed(tmp, state, 0, 1, "err")
+            reset_failed_to_pending(tmp, state)
+        result = pending_trials(state)
+        assert (0, 1) in result
+        assert (0, 0) not in result
+
+    def test_state_persisted_to_disk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = create(tmp, "s", _seq_params(), _make_cases(1), trials=1)
+            mark_failed(tmp, state, 0, 0, "boom")
+            reset_failed_to_pending(tmp, state)
+            reloaded = load(tmp)
+        assert reloaded["cases"][0]["trials"][0]["status"] == PENDING
+
+    def test_no_write_when_nothing_to_reset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = create(tmp, "s", _seq_params(), _make_cases(1), trials=1)
+            mark_completed(tmp, state, 0, 0)
+            import os, time
+            path = os.path.join(tmp, "state.json")
+            mtime_before = os.path.getmtime(path)
+            time.sleep(0.05)
+            reset_failed_to_pending(tmp, state)
+            mtime_after = os.path.getmtime(path)
+        assert mtime_after == mtime_before
