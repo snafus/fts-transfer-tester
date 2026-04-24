@@ -131,6 +131,66 @@ _DICT_SECTIONS = set(_DEFAULTS.keys()) | {"fts", "tokens"}
 
 
 # ---------------------------------------------------------------------------
+# Token source identification (for --check-tokens reporting)
+# ---------------------------------------------------------------------------
+
+def identify_token_sources(path, token=None, fts_submit_token=None,
+                           source_read_token=None, dest_write_token=None):
+    # type: (str, object, object, object, object) -> dict
+    """Return a dict describing where each token role will be sourced from.
+
+    Does NOT fetch OIDC tokens — reports 'oidc' as the source if that is
+    where the role would be resolved.  Raises ConfigError if the file cannot
+    be read.
+
+    Returns:
+        dict mapping role name → source description string, e.g.:
+            {
+                "fts_submit":  "cli (--fts-submit-token)",
+                "source_read": "env (SOURCE_READ_TOKEN)",
+                "dest_write":  "oidc (https://iam.example.org/token)",
+            }
+    """
+    raw = _read_yaml(path)
+    config = _apply_defaults(raw)
+    oidc_cfg = config.get("oidc", {})
+
+    sources = {}
+    for role in ("fts_submit", "source_read", "dest_write"):
+        # Check in priority order, highest first.
+        per_role_cli = {
+            "fts_submit":  fts_submit_token,
+            "source_read": source_read_token,
+            "dest_write":  dest_write_token,
+        }.get(role)
+        if per_role_cli:
+            sources[role] = "cli (--{}-token)".format(role.replace("_", "-"))
+            continue
+        if token:
+            sources[role] = "cli (--token)"
+            continue
+        per_role_env = os.environ.get(_ENV_TOKEN_ROLES[role])
+        if per_role_env:
+            sources[role] = "env ({})".format(_ENV_TOKEN_ROLES[role])
+            continue
+        shared_env = os.environ.get(_ENV_TOKEN_SHARED)
+        if shared_env:
+            sources[role] = "env ({})".format(_ENV_TOKEN_SHARED)
+            continue
+        yaml_val = (raw.get("tokens") or {}).get(role)
+        if yaml_val:
+            sources[role] = "yaml (tokens.{})".format(role)
+            continue
+        if oidc_cfg.get("enabled") and (oidc_cfg.get("roles") or {}).get(role):
+            endpoint = oidc_cfg["roles"][role].get("token_endpoint", "?")
+            sources[role] = "oidc ({})".format(endpoint)
+            continue
+        sources[role] = "MISSING"
+
+    return sources
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 

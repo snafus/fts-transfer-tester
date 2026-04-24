@@ -21,6 +21,8 @@ import sys
 
 from fts_framework.sequence import state as seq_state
 from fts_framework.sequence.runner import run_sequence
+from fts_framework.sequence import loader as seq_loader
+from fts_framework.config import loader as cfg_loader
 
 
 def main():
@@ -39,6 +41,12 @@ def main():
     )
 
     mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--check-tokens",
+        action="store_true",
+        default=False,
+        help="Resolve and verify tokens (including OIDC fetch) then exit",
+    )
     mode.add_argument(
         "--resume",
         metavar="SEQUENCE_DIR",
@@ -99,6 +107,65 @@ def main():
     )
 
     log = logging.getLogger(__name__)
+
+    # --check-tokens: report token sources and attempt full resolution (OIDC fetch).
+    if args.check_tokens:
+        params_file = args.params
+        if params_file is None:
+            parser.error("params is required with --check-tokens")
+        try:
+            seq_params = seq_loader.load(params_file)
+        except Exception as exc:
+            log.error("Failed to load sequence params: %s", exc)
+            sys.exit(1)
+        baseline = seq_params["baseline_config_path"]
+
+        # First show planned sources (no OIDC fetch yet)
+        try:
+            sources = cfg_loader.identify_token_sources(
+                baseline,
+                token=args.token,
+                fts_submit_token=args.fts_submit_token,
+                source_read_token=args.source_read_token,
+                dest_write_token=args.dest_write_token,
+            )
+        except Exception as exc:
+            log.error("Cannot read baseline config %s: %s", baseline, exc)
+            sys.exit(1)
+
+        print("\nToken source plan:")
+        print("  {:<16} {}".format("Role", "Source"))
+        print("  {:<16} {}".format("----", "------"))
+        for role in ("fts_submit", "source_read", "dest_write"):
+            print("  {:<16} {}".format(role, sources[role]))
+        print()
+
+        # Now attempt actual resolution (fetches OIDC tokens if configured)
+        missing = [r for r, s in sources.items() if s == "MISSING"]
+        if missing:
+            print("ERROR: no token source for: {}".format(", ".join(missing)))
+            sys.exit(1)
+
+        print("Fetching tokens...")
+        try:
+            config = cfg_loader.load(
+                baseline,
+                token=args.token,
+                fts_submit_token=args.fts_submit_token,
+                source_read_token=args.source_read_token,
+                dest_write_token=args.dest_write_token,
+            )
+        except Exception as exc:
+            print("FAILED: {}".format(exc))
+            sys.exit(1)
+
+        print("\nToken check result:")
+        for role in ("fts_submit", "source_read", "dest_write"):
+            val = config["tokens"].get(role) or ""
+            status = "OK ({} chars)".format(len(val)) if val else "MISSING"
+            print("  {:<16} {}  [{}]".format(role, status, sources[role]))
+        print()
+        sys.exit(0)
 
     # Resolve params file and resume_dir from the chosen mode.
     resume_dir = args.resume
