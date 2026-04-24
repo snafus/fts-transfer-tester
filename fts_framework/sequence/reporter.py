@@ -151,6 +151,35 @@ def _aggregate_cases(state, rows):
 # Report writers
 # ---------------------------------------------------------------------------
 
+def _write_runs_index(sequence_dir, rows):
+    # type: (str, list) -> None
+    """Write ``runs/index.json`` mapping each run directory to its case params.
+
+    Provides a human-readable lookup from run directory name to the parameter
+    set that produced it, without needing to open ``state.json``.
+    """
+    index = []
+    for row in rows:
+        run_id = row.get("run_id") or ""
+        if not run_id:
+            continue
+        index.append({
+            "run_dir":     run_id,
+            "case_index":  row["case_index"],
+            "trial_index": row["trial_index"],
+            "status":      row["status"],
+            "params":      {k[len("param_"):]: v
+                            for k, v in row.items() if k.startswith("param_")},
+        })
+
+    runs_dir = os.path.join(sequence_dir, "runs")
+    if not os.path.isdir(runs_dir):
+        os.makedirs(runs_dir)
+    path = os.path.join(runs_dir, "index.json")
+    with open(path, "w") as fh:
+        json.dump(index, fh, indent=2)
+
+
 def _write_json(sequence_dir, rows, aggregates, state):
     # type: (str, list, list, dict) -> None
     data = {
@@ -397,6 +426,7 @@ def generate_summary(sequence_dir, state, runs_dir="runs"):
     rows       = _collect_rows(state, runs_dir)
     aggregates = _aggregate_cases(state, rows)
 
+    _write_runs_index(sequence_dir, rows)
     _write_json(sequence_dir, rows, aggregates, state)
     _write_csv(sequence_dir, rows)
     _write_markdown(sequence_dir, rows, aggregates, state)

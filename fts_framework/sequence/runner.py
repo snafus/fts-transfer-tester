@@ -166,7 +166,9 @@ def run_sequence(params_file, resume_dir=None, runs_dir=None,
                 case_index, trial_index, run_id,
             )
         else:
-            run_id = generate_run_id()
+            run_id = "c{:02d}_t{:02d}_{}".format(
+                case_index, trial_index, generate_run_id()
+            )
         trial_config["run"]["run_id"] = run_id
 
         seq_state.mark_running(

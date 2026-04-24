@@ -118,6 +118,20 @@ class TestResumeRunId:
         assert len(seen_run_ids) == 1
         assert seen_run_ids[0] is not None
 
+    def test_run_id_prefixed_with_case_and_trial(self, tmp_path, monkeypatch):
+        """Fresh run_id must start with c{case:02d}_t{trial:02d}_ for readability."""
+        seen_run_ids = []
+
+        def _capture(config, runs_dir="runs"):
+            seen_run_ids.append(config["run"]["run_id"])
+
+        _install_mocks(monkeypatch, tmp_path, run_campaign_fn=_capture)
+
+        from fts_framework.sequence.runner import run_sequence
+        run_sequence("params.yaml", runs_dir=str(tmp_path))
+
+        assert seen_run_ids[0].startswith("c00_t00_")
+
     def test_running_trial_reuses_stored_run_id(self, tmp_path, monkeypatch):
         """A RUNNING trial (interrupted mid-campaign) must reuse its stored
         run_id so run_campaign() can resume the partial campaign."""

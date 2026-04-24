@@ -301,6 +301,34 @@ class TestAggregation:
         assert agg["n_completed"] == 1
         assert agg["n_failed"]    == 1
 
+    def test_runs_index_written(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runs_dir = os.path.join(tmp, "runs")
+            os.makedirs(runs_dir)
+            state = _make_state(n_cases=1, trials=1)
+            _mark_completed_inmem(state, 0, 0, "c00_t00_run_abc")
+            seq_reporter.generate_summary(tmp, state, runs_dir=runs_dir)
+            index_path = os.path.join(tmp, "runs", "index.json")
+            assert os.path.isfile(index_path)
+            with open(index_path) as fh:
+                index = json.load(fh)
+        assert len(index) == 1
+        assert index[0]["run_dir"] == "c00_t00_run_abc"
+        assert index[0]["case_index"] == 0
+        assert index[0]["trial_index"] == 0
+        assert "transfer.max_files" in index[0]["params"]
+
+    def test_runs_index_excludes_entries_without_run_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = _make_state(n_cases=1, trials=2)
+            _mark_completed_inmem(state, 0, 0, "c00_t00_run_abc")
+            # trial 1 still pending — no run_id
+            seq_reporter.generate_summary(tmp, state, runs_dir=tmp)
+            with open(os.path.join(tmp, "runs", "index.json")) as fh:
+                index = json.load(fh)
+        assert len(index) == 1
+        assert index[0]["run_dir"] == "c00_t00_run_abc"
+
     def test_all_pending_produces_none_aggregates(self):
         with tempfile.TemporaryDirectory() as tmp:
             state = _make_state(n_cases=1, trials=2)
