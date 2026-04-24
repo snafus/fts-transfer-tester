@@ -298,10 +298,9 @@ def submit_with_500_recovery(fts_client, payload, config, run_id, chunk_index, r
     if response.status_code == 500:
         logger.warning(
             "POST /jobs returned 500 for chunk %d (retry_round=%d) "
-            "— waiting %ds then scanning for existing job",
-            chunk_index, retry_round, _POST_500_SETTLE_S,
+            "— will scan for existing job at +5s, +15s, +60s",
+            chunk_index, retry_round,
         )
-        time.sleep(_POST_500_SETTLE_S)
 
         scan_window_s = config.get("submission", {}).get("scan_window_s", 300)
         # Round up to the nearest whole hour (minimum 1) — FTS3 expects an
@@ -315,18 +314,13 @@ def submit_with_500_recovery(fts_client, payload, config, run_id, chunk_index, r
             scan_window_h, _states,
         )
 
-        # Retry the scan up to 3 times with backoff: FTS3 may commit the job
-        # to its DB slightly after returning 500, so one attempt is not enough.
-        _scan_delays = [0, 5, 15]
+        # Retry the scan up to 3 times: FTS3 may commit the job to its DB
+        # slightly after returning 500, so one attempt is not enough.
+        # Delays before each scan: +5s, +15s, +60s (on top of the 5s settle).
+        _scan_delays = [5, 15, 60]
         matches = []
         for attempt, delay in enumerate(_scan_delays):
-            if delay:
-                logger.warning(
-                    "500-recovery: scan attempt %d found no match — "
-                    "waiting %ds before retry",
-                    attempt, delay,
-                )
-                time.sleep(delay)
+            time.sleep(delay)
 
             jobs = fts_client.get(_scan_path)
 
@@ -340,6 +334,13 @@ def submit_with_500_recovery(fts_client, payload, config, run_id, chunk_index, r
             matches = _match_jobs(jobs, run_id, chunk_index, retry_round)
             if matches:
                 break
+
+            if attempt < len(_scan_delays) - 1:
+                logger.warning(
+                    "500-recovery: scan %d/%d found no match — "
+                    "retrying in %ds",
+                    attempt + 1, len(_scan_delays), _scan_delays[attempt + 1],
+                )
 
         if len(matches) == 1:
             job_id = matches[0]["job_id"]
