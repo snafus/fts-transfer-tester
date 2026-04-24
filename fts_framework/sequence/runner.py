@@ -26,7 +26,6 @@ import uuid
 from datetime import datetime
 
 from fts_framework.config import loader as config_loader
-from fts_framework.persistence import store
 from fts_framework.runner import generate_run_id, run_campaign
 from fts_framework.sequence import loader as seq_loader
 from fts_framework.sequence import reporter as seq_reporter
@@ -90,9 +89,6 @@ def run_sequence(params_file, resume_dir=None, runs_dir=None,
     Returns:
         str: Path to the sequence output directory.
     """
-    if runs_dir is None:
-        runs_dir = store._DEFAULT_RUNS_DIR
-
     # Load and validate sequence params
     seq_params = seq_loader.load(params_file)
 
@@ -105,10 +101,16 @@ def run_sequence(params_file, resume_dir=None, runs_dir=None,
         dest_write_token=dest_write_token,
     )
 
-    # Determine / create sequence directory
+    # Determine / create sequence directory, then resolve runs_dir.
+    # runs_dir defaults to <sequence_dir>/runs/ so all outputs are
+    # self-contained within the sequence directory.
     if resume_dir:
         sequence_dir = resume_dir
         state = seq_state.load(sequence_dir)
+        # On resume, use the stored runs_dir unless the caller overrides it.
+        runs_dir = runs_dir or state.get("runs_dir") or os.path.join(
+            sequence_dir, "runs"
+        )
         logger.info(
             "Resuming sequence %s from %s",
             state["sequence_id"], sequence_dir,
@@ -117,7 +119,9 @@ def run_sequence(params_file, resume_dir=None, runs_dir=None,
         sequence_id  = _generate_sequence_id(seq_params.get("label"))
         output_base  = seq_params["output_base_dir"]
         sequence_dir = os.path.join(output_base, sequence_id)
+        runs_dir     = runs_dir or os.path.join(sequence_dir, "runs")
         os.makedirs(os.path.join(sequence_dir, "reports"), exist_ok=True)
+        os.makedirs(runs_dir, exist_ok=True)
         _write_params_copy(sequence_dir, params_file)
         state = seq_state.create(
             sequence_dir, sequence_id, seq_params,

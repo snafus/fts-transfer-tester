@@ -19,7 +19,6 @@ import logging
 import os
 import sys
 
-from fts_framework.persistence.store import _DEFAULT_RUNS_DIR
 from fts_framework.sequence import state as seq_state
 from fts_framework.sequence.runner import run_sequence
 
@@ -55,11 +54,10 @@ def main():
 
     parser.add_argument(
         "--runs-dir",
-        default=_DEFAULT_RUNS_DIR,
+        default=None,
         metavar="DIR",
-        help="Base directory for individual run outputs (default: {})".format(
-            _DEFAULT_RUNS_DIR
-        ),
+        help="Base directory for individual run outputs "
+             "(default: <sequence_dir>/runs/)",
     )
     parser.add_argument(
         "--log-level",
