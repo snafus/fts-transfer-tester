@@ -86,15 +86,18 @@ def _plan_single_destination(pfns, config):
 
 def _plan_multi_destination(pfns, destinations, config):
     # type: (list, list, dict) -> list
-    """Distribute *pfns* across *destinations* proportionally by weight.
+    """Distribute *pfns* across *destinations* proportionally by weight, interleaved.
 
-    Files are partitioned into contiguous groups, one per destination, in
-    the order the destinations appear in the config.  Within each group the
-    per-destination file index restarts from zero so naming is compact.
+    Files are assigned using smooth weighted round-robin so that consecutive
+    entries in the mapping alternate across destinations.  When chunked into
+    FTS3 jobs each job therefore carries transfers to multiple sites, which
+    distributes load from the first submitted job rather than saturating one
+    site and then moving on.
 
-    Weight example: weights [5, 3, 2] with 100 files → 50, 30, 20 files.
-    Remainder files (from integer rounding) are assigned one each to the
-    destinations with the largest fractional parts, in config order.
+    The total file count per destination still follows the weighted allocation:
+    weights [5, 3, 2] with 100 files → 50, 30, 20 files.  Remainder files
+    (from integer rounding) go to the destinations with the largest fractional
+    parts, in config order.
     """
     test_label   = config["run"]["test_label"]
     preserve_ext = config["transfer"]["preserve_extension"]
@@ -108,27 +111,46 @@ def _plan_multi_destination(pfns, destinations, config):
     counts   = [int(r) for r in raw]
     leftover = n - sum(counts)
 
-    # Give remainder slots to destinations with the largest fractional part
     fractions = [(raw[i] - counts[i], i) for i in range(len(destinations))]
     fractions.sort(key=lambda x: (-x[0], x[1]))
     for k in range(leftover):
         counts[fractions[k][1]] += 1
 
-    mapping = []
-    offset  = 0
     for dest_cfg, count in zip(destinations, counts):
-        prefix = dest_cfg["prefix"].rstrip("/")
-        for local_idx, pfn in enumerate(sorted_pfns[offset:offset + count]):
-            ext  = _extract_extension(pfn) if preserve_ext else ""
-            dest = "{}/{}/testfile_{:06d}{}".format(
-                prefix, test_label, local_idx, ext
-            )
-            mapping.append((pfn, dest))
         logger.info(
             "Destination mapping: %d PFNs → %s/%s/testfile_NNNNNN (weight %d)",
-            count, prefix, test_label, dest_cfg["weight"],
+            count, dest_cfg["prefix"].rstrip("/"), test_label, dest_cfg["weight"],
         )
-        offset += count
+
+    # Build the interleaved sequence of (dest_index, local_index) pairs using
+    # smooth WRR (nginx-style): each step, give every active destination its
+    # weight as credit, pick the highest, then deduct total_weight from it.
+    weights          = [d["weight"] for d in destinations]
+    current_weights  = [0] * len(destinations)
+    remaining        = list(counts)
+    local_counts     = [0] * len(destinations)
+    sequence         = []  # list of (dest_idx, local_idx)
+
+    for _ in range(n):
+        for i in range(len(destinations)):
+            if remaining[i] > 0:
+                current_weights[i] += weights[i]
+        best = max(
+            (i for i in range(len(destinations)) if remaining[i] > 0),
+            key=lambda i: current_weights[i],
+        )
+        current_weights[best] -= total_w
+        sequence.append((best, local_counts[best]))
+        local_counts[best] += 1
+        remaining[best] -= 1
+
+    mapping = []
+    for pfn, (dest_idx, local_idx) in zip(sorted_pfns, sequence):
+        prefix = destinations[dest_idx]["prefix"].rstrip("/")
+        ext    = _extract_extension(pfn) if preserve_ext else ""
+        mapping.append((pfn, "{}/{}/testfile_{:06d}{}".format(
+            prefix, test_label, local_idx, ext,
+        )))
 
     return mapping
 

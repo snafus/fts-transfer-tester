@@ -322,6 +322,24 @@ class TestMultiDestination:
         mapping = plan(pfns, _multi_config(_dest_specs(1), preserve_extension=True))
         assert _dsts(mapping)[0].endswith(".dat")
 
+    def test_interleaved_not_contiguous(self):
+        # With equal weights, destinations must alternate rather than appear in blocks.
+        pfns = ["https://src.example.org/f{:03d}".format(i) for i in range(6)]
+        mapping = plan(pfns, _multi_config(_dest_specs(1, 1)))
+        hosts = [dst.split("/")[2] for src, dst in mapping]
+        # A contiguous layout would be [A,A,A,B,B,B]; interleaved must not be all-same in first half
+        assert hosts[:3] != ["site-0.example.org"] * 3
+
+    def test_interleaved_weighted_ordering(self):
+        # weights [2, 1]: pattern should be A,B,A,B,A,A,... not A,A,A,A,B,B
+        pfns = ["https://src.example.org/f{:02d}".format(i) for i in range(6)]
+        mapping = plan(pfns, _multi_config(_dest_specs(2, 1)))
+        hosts = [dst.split("/")[2] for src, dst in mapping]
+        # First file must go to heavier site; consecutive pairs must not all be same-site
+        assert hosts[0] == "site-0.example.org"
+        # There must be at least one site-1 entry in the first 3 positions
+        assert "site-1.example.org" in hosts[:3]
+
 
 class TestMultiDestinationValidation:
     def _base(self, tmp_path):
