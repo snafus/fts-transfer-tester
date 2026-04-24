@@ -9,7 +9,6 @@ import os
 import json
 import pytest
 
-from collections import OrderedDict
 
 from fts_framework.exceptions import TokenExpiredError
 
@@ -176,7 +175,7 @@ def _patch_submit_internals(monkeypatch, chunks=None, build_payload_fn=None,
     import fts_framework.runner as runner_mod
 
     if chunks is None:
-        chunks = lambda m, size=200: [OrderedDict(list(m.items()))]  # noqa: E731
+        chunks = lambda m, size=200: [list(m)]  # noqa: E731
     if build_payload_fn is None:
         build_payload_fn = lambda cm, cs, cfg, run_id, ci, rr: {"files": []}  # noqa: E731
     if write_payload_fn is None:
@@ -200,7 +199,7 @@ class TestSubmitChunks:
     def test_returns_subjob_list(self, tmp_path, monkeypatch):
         _patch_submit_internals(monkeypatch, submit_fn=lambda c, p, cfg, r, ci, rr: "job-001")
         from fts_framework.runner import _submit_chunks
-        mapping = OrderedDict([("https://src/f1", "https://dst/f1")])
+        mapping = [("https://src/f1", "https://dst/f1")]
         subjobs = _submit_chunks(mapping, {}, self._config(), "run-1", 0, _FakeClient([]), str(tmp_path))
         assert len(subjobs) == 1
         assert subjobs[0]["job_id"] == "job-001"
@@ -208,7 +207,7 @@ class TestSubmitChunks:
     def test_subjob_fields_present(self, tmp_path, monkeypatch):
         _patch_submit_internals(monkeypatch, submit_fn=lambda c, p, cfg, r, ci, rr: "job-xyz")
         from fts_framework.runner import _submit_chunks
-        mapping = OrderedDict([("https://src/a", "https://dst/a")])
+        mapping = [("https://src/a", "https://dst/a")]
         result = _submit_chunks(mapping, {}, self._config(), "run-1", 0, _FakeClient([]), str(tmp_path))
         sj = result[0]
         for key in ("job_id", "chunk_index", "run_id", "retry_round",
@@ -220,7 +219,7 @@ class TestSubmitChunks:
         _patch_submit_internals(monkeypatch)
         from fts_framework.runner import _submit_chunks
         result = _submit_chunks(
-            OrderedDict([("s", "d")]), {}, self._config(), "run-1", 0, _FakeClient([]), str(tmp_path)
+            [("s", "d")], {}, self._config(), "run-1", 0, _FakeClient([]), str(tmp_path)
         )
         assert result[0]["status"] == "SUBMITTED"
         assert result[0]["terminal"] is False
@@ -230,7 +229,7 @@ class TestSubmitChunks:
         from fts_framework.runner import _submit_chunks
         cfg = {"fts": {"endpoint": "https://fts.example.org:8446"}, "transfer": {"chunk_size": 200}}
         result = _submit_chunks(
-            OrderedDict([("s", "d")]), {}, cfg, "run-1", 0, _FakeClient([]), str(tmp_path)
+            [("s", "d")], {}, cfg, "run-1", 0, _FakeClient([]), str(tmp_path)
         )
         assert "job-abc" in result[0]["fts_monitor_url"]
         assert "8449" in result[0]["fts_monitor_url"]
@@ -240,7 +239,7 @@ class TestSubmitChunks:
         from fts_framework.runner import _submit_chunks
         cfg = {"fts": {"endpoint": "https://fts.example.org"}, "transfer": {"chunk_size": 200}}
         result = _submit_chunks(
-            OrderedDict([("s", "d")]), {}, cfg, "run-1", 0, _FakeClient([]), str(tmp_path)
+            [("s", "d")], {}, cfg, "run-1", 0, _FakeClient([]), str(tmp_path)
         )
         assert result[0]["fts_monitor_url"] == ""
 
@@ -251,11 +250,11 @@ class TestSubmitChunks:
             return "job-{}".format(call_count[0])
         _patch_submit_internals(
             monkeypatch,
-            chunks=lambda m, size=200: [OrderedDict([("s1", "d1")]), OrderedDict([("s2", "d2")])],
+            chunks=lambda m, size=200: [[("s1", "d1")], [("s2", "d2")]],
             submit_fn=_fake_submit,
         )
         from fts_framework.runner import _submit_chunks
-        mapping = OrderedDict([("s1", "d1"), ("s2", "d2")])
+        mapping = [("s1", "d1"), ("s2", "d2")]
         result = _submit_chunks(
             mapping, {}, self._config(chunk_size=1), "run-1", 0, _FakeClient([]), str(tmp_path)
         )
@@ -274,7 +273,7 @@ class TestSubmitChunks:
             return "job-1"
         _patch_submit_internals(monkeypatch, write_payload_fn=_fake_write, submit_fn=_fake_submit)
         from fts_framework.runner import _submit_chunks
-        _submit_chunks(OrderedDict([("s", "d")]), {}, self._config(), "r", 0, _FakeClient([]), str(tmp_path))
+        _submit_chunks([("s", "d")], {}, self._config(), "r", 0, _FakeClient([]), str(tmp_path))
         assert call_order == ["write", "submit"]
 
     def test_submission_error_recorded_as_submission_failed(self, tmp_path, monkeypatch):
@@ -284,7 +283,7 @@ class TestSubmitChunks:
         _patch_submit_internals(monkeypatch, submit_fn=_failing_submit)
         from fts_framework.runner import _submit_chunks
         result = _submit_chunks(
-            OrderedDict([("s", "d")]), {}, self._config(), "run-1", 0, _FakeClient([]), str(tmp_path)
+            [("s", "d")], {}, self._config(), "run-1", 0, _FakeClient([]), str(tmp_path)
         )
         assert len(result) == 1
         assert result[0]["status"] == "SUBMISSION_FAILED"
@@ -298,7 +297,7 @@ class TestSubmitChunks:
         _patch_submit_internals(monkeypatch, submit_fn=_failing_submit)
         from fts_framework.runner import _submit_chunks
         result = _submit_chunks(
-            OrderedDict([("src1", "dst1"), ("src2", "dst2")]),
+            [("src1", "dst1"), ("src2", "dst2")],
             {}, self._config(), "run-1", 0, _FakeClient([]), str(tmp_path)
         )
         assert result[0]["source_pfns"] == ["src1", "src2"]
@@ -313,12 +312,12 @@ class TestSubmitChunks:
             return "job-{}".format(ci)
         _patch_submit_internals(
             monkeypatch,
-            chunks=lambda m, size=200: [OrderedDict([("s1", "d1")]), OrderedDict([("s2", "d2")])],
+            chunks=lambda m, size=200: [[("s1", "d1")], [("s2", "d2")]],
             submit_fn=_mixed_submit,
         )
         from fts_framework.runner import _submit_chunks
         result = _submit_chunks(
-            OrderedDict([("s1", "d1"), ("s2", "d2")]), {}, self._config(), "run-1", 0, _FakeClient([]), str(tmp_path)
+            [("s1", "d1"), ("s2", "d2")], {}, self._config(), "run-1", 0, _FakeClient([]), str(tmp_path)
         )
         assert len(result) == 2
         assert result[0]["status"] == "SUBMISSION_FAILED"
@@ -473,7 +472,7 @@ def _install_run_campaign_mocks(monkeypatch, tmp_path,
         monkeypatch.setattr(
             "fts_framework.persistence.store.load_manifest",
             lambda run_id, runs_dir="runs": {
-                "destination_mapping": {"s1": "d1"},
+                "destination_mapping": [["s1", "d1"]],
             },
         )
     else:
@@ -488,7 +487,7 @@ def _install_run_campaign_mocks(monkeypatch, tmp_path,
         )
         monkeypatch.setattr(
             "fts_framework.destination.planner.plan",
-            lambda pfns, config: OrderedDict([("https://src/f1", "https://dst/f1")]),
+            lambda pfns, config: [("https://src/f1", "https://dst/f1")],
         )
         monkeypatch.setattr(
             "fts_framework.checksum.fetcher.fetch_all",
@@ -500,7 +499,7 @@ def _install_run_campaign_mocks(monkeypatch, tmp_path,
         )
         monkeypatch.setattr(
             "fts_framework.persistence.store.load_manifest",
-            lambda run_id, runs_dir="runs": {"destination_mapping": {"https://src/f1": "https://dst/f1"}},
+            lambda run_id, runs_dir="runs": {"destination_mapping": [["https://src/f1", "https://dst/f1"]]},
         )
 
     # _submit_chunks
@@ -675,7 +674,7 @@ class TestRunCampaign:
                     "submitted_at": "2026-01-01T00:00:00Z",
                     "source_pfns": ["https://src/f1"],
                 }]
-            retry_mappings.append(dict(mapping))
+            retry_mappings.append(list(mapping))
             return [{
                 "job_id": "job-retry", "chunk_index": 0, "retry_round": retry_round,
                 "terminal": False, "status": "SUBMITTED", "file_count": 1,
@@ -708,7 +707,7 @@ class TestRunCampaign:
 
         assert call_count[0] == 2  # initial + 1 retry
         assert len(retry_mappings) == 1
-        assert "https://src/f1" in retry_mappings[0]
+        assert any(src == "https://src/f1" for src, dst in retry_mappings[0])
 
     def test_pre_cleanup_called_when_configured(self, tmp_path, monkeypatch):
         _install_run_campaign_mocks(monkeypatch, tmp_path)
@@ -885,9 +884,7 @@ class TestRunCampaign:
         )
         monkeypatch.setattr(
             "fts_framework.destination.planner.plan",
-            lambda pfns, config: planned.append(pfns) or OrderedDict(
-                [("https://src/f1", "https://dst/f1")]
-            ),
+            lambda pfns, config: planned.append(pfns) or [("https://src/f1", "https://dst/f1")],
         )
         config = _base_config()
         config["transfer"]["max_files"] = 1
@@ -904,9 +901,7 @@ class TestRunCampaign:
         )
         monkeypatch.setattr(
             "fts_framework.destination.planner.plan",
-            lambda pfns, config: planned.append(pfns) or OrderedDict(
-                [("https://src/f1", "https://dst/f1")]
-            ),
+            lambda pfns, config: planned.append(pfns) or [("https://src/f1", "https://dst/f1")],
         )
         config = _base_config()
         config["transfer"]["max_files"] = None
@@ -923,15 +918,96 @@ class TestRunCampaign:
         )
         monkeypatch.setattr(
             "fts_framework.destination.planner.plan",
-            lambda pfns, config: planned.append(pfns) or OrderedDict(
-                [("https://src/f1", "https://dst/f1")]
-            ),
+            lambda pfns, config: planned.append(pfns) or [("https://src/f1", "https://dst/f1")],
         )
         config = _base_config()
         config["transfer"]["max_files"] = 999
         from fts_framework.runner import run_campaign
         run_campaign(config, runs_dir=str(tmp_path))
-        assert planned[0] == ["https://src/f1", "https://src/f2"]
+        assert len(planned[0]) == 999
+        assert planned[0].count("https://src/f1") + planned[0].count("https://src/f2") == 999
+
+    def test_max_files_larger_than_inventory_samples_with_repetition(self, tmp_path, monkeypatch):
+        _install_run_campaign_mocks(monkeypatch, tmp_path)
+        planned = []
+        monkeypatch.setattr(
+            "fts_framework.inventory.loader.load",
+            lambda path: (["https://src/f1", "https://src/f2", "https://src/f3"], {}),
+        )
+        monkeypatch.setattr(
+            "fts_framework.destination.planner.plan",
+            lambda pfns, config: planned.append(pfns) or [("https://src/f1", "https://dst/f1")],
+        )
+        config = _base_config()
+        config["transfer"]["max_files"] = 7
+        from fts_framework.runner import run_campaign
+        run_campaign(config, runs_dir=str(tmp_path))
+        assert len(planned[0]) == 7
+        # Each original PFN must appear (cycling gives 2 full cycles + 1 extra)
+        assert planned[0].count("https://src/f1") == 3
+        assert planned[0].count("https://src/f2") == 2
+        assert planned[0].count("https://src/f3") == 2
+
+    def test_max_files_larger_than_inventory_logs_warning(self, tmp_path, monkeypatch, caplog):
+        import logging
+        _install_run_campaign_mocks(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            "fts_framework.inventory.loader.load",
+            lambda path: (["https://src/f1", "https://src/f2"], {}),
+        )
+        monkeypatch.setattr(
+            "fts_framework.destination.planner.plan",
+            lambda pfns, config: [("https://src/f1", "https://dst/f1")],
+        )
+        config = _base_config()
+        config["transfer"]["max_files"] = 5
+        from fts_framework.runner import run_campaign
+        with caplog.at_level(logging.WARNING, logger="fts_framework.runner"):
+            run_campaign(config, runs_dir=str(tmp_path))
+        assert any("sampling" in r.message for r in caplog.records)
+
+    def test_shuffle_source_pfns_calls_random_shuffle(self, tmp_path, monkeypatch):
+        _install_run_campaign_mocks(monkeypatch, tmp_path)
+        pfns = ["https://src/f{}".format(i) for i in range(10)]
+        monkeypatch.setattr(
+            "fts_framework.inventory.loader.load",
+            lambda path: (list(pfns), {}),
+        )
+        shuffle_calls = []
+        monkeypatch.setattr(
+            "fts_framework.runner.random.shuffle",
+            lambda lst: shuffle_calls.append(list(lst)) or lst.reverse(),
+        )
+        monkeypatch.setattr(
+            "fts_framework.destination.planner.plan",
+            lambda p, c: [(x, "https://dst/x") for x in p],
+        )
+        config = _base_config()
+        config["transfer"]["shuffle_source_pfns"] = True
+        from fts_framework.runner import run_campaign
+        run_campaign(config, runs_dir=str(tmp_path))
+        assert len(shuffle_calls) == 1
+
+    def test_shuffle_false_does_not_call_random_shuffle(self, tmp_path, monkeypatch):
+        _install_run_campaign_mocks(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            "fts_framework.inventory.loader.load",
+            lambda path: (["https://src/f1"], {}),
+        )
+        shuffle_calls = []
+        monkeypatch.setattr(
+            "fts_framework.runner.random.shuffle",
+            lambda lst: shuffle_calls.append(lst),
+        )
+        monkeypatch.setattr(
+            "fts_framework.destination.planner.plan",
+            lambda p, c: [(x, "https://dst/x") for x in p],
+        )
+        config = _base_config()
+        config["transfer"]["shuffle_source_pfns"] = False
+        from fts_framework.runner import run_campaign
+        run_campaign(config, runs_dir=str(tmp_path))
+        assert shuffle_calls == []
 
     def test_empty_file_records_with_retry_max_set(self, tmp_path, monkeypatch):
         """W2: empty file_records with framework_retry_max>0 exits loop without submitting retry."""

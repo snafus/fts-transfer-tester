@@ -7,7 +7,6 @@ All HTTP calls are mocked via the ``responses`` library.
 import pytest
 import responses as resp_lib
 import requests
-from collections import OrderedDict
 
 from fts_framework.cleanup.manager import (
     cleanup_pre,
@@ -30,11 +29,10 @@ def _session(token="dest-write-token", ssl_verify=True):
 
 
 def _mapping(*dest_urls):
-    """Build a minimal OrderedDict with integer source keys."""
-    return OrderedDict(
+    return [
         ("https://src.example.org/f{:03d}.dat".format(i), url)
         for i, url in enumerate(dest_urls)
-    )
+    ]
 
 
 def _file_record(dest_surl, file_state="FINISHED"):
@@ -169,7 +167,7 @@ class TestCleanupPre:
         assert audit[0]["success"] is True
 
     def test_empty_mapping_returns_empty_audit(self):
-        audit = cleanup_pre(OrderedDict(), _session(), {})
+        audit = cleanup_pre([], _session(), {})
         assert audit == []
 
     @resp_lib.activate

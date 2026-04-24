@@ -35,9 +35,9 @@ Programmatic usage::
 
 import argparse
 import logging
+import random
 import sys
 import uuid
-from collections import OrderedDict
 from datetime import datetime
 
 from fts_framework.checksum import fetcher as checksum_fetcher
@@ -105,14 +105,14 @@ def _fetch_optimizer_state(fts_client):
 
 def _submit_chunks(mapping, checksums, config, run_id, retry_round,
                    fts_client, runs_dir):
-    # type: (OrderedDict, dict, dict, str, int, object, str) -> list
+    # type: (list, dict, dict, str, int, object, str) -> list
     """Chunk *mapping*, persist each payload, and submit to FTS3.
 
     Implements the raw-data-first invariant: ``store.write_payload()`` is
     called for every chunk **before** the ``POST /jobs`` request.
 
     Args:
-        mapping (OrderedDict): Source PFN → destination URL for this round.
+        mapping (list): List of ``(src_pfn, dest_url)`` pairs for this round.
         checksums (dict): PFN → ``"adler32:<hex>"``.  May be empty on resume.
         config (dict): Validated framework config dict.
         run_id (str): Unique run identifier.
@@ -164,7 +164,7 @@ def _submit_chunks(mapping, checksums, config, run_id, retry_round,
                 "terminal": True,
                 "payload_path": payload_path,
                 "fts_monitor_url": "",
-                "source_pfns": list(chunk_map.keys()),
+                "source_pfns": [src for src, dst in chunk_map],
             })
             continue
 
@@ -299,7 +299,7 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
             run_id, fts_client, config, runs_dir=runs_dir,
         )
         manifest = store.load_manifest(run_id, runs_dir=runs_dir)
-        mapping = OrderedDict(manifest.get("destination_mapping", {}))
+        mapping = [tuple(pair) for pair in manifest.get("destination_mapping", [])]
         # Checksums are not persisted; leave empty — retry round will
         # submit without checksum (FTS3 skips verification if absent)
         checksums = {}
@@ -311,15 +311,28 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
         pfns, supplied_checksums = inventory_loader.load(
             config["transfer"]["source_pfns_file"]
         )
+        if config.get("transfer", {}).get("shuffle_source_pfns"):
+            random.shuffle(pfns)
+            logger.info("Source PFNs shuffled (%d total)", len(pfns))
+
         max_files = config.get("transfer", {}).get("max_files")
-        if max_files is not None and len(pfns) > max_files:
-            logger.info(
-                "max_files=%d applied: using first %d of %d PFNs",
-                max_files, max_files, len(pfns),
-            )
-            pfns = pfns[:max_files]
-            supplied_checksums = {k: v for k, v in supplied_checksums.items()
-                                  if k in pfns}
+        if max_files is not None:
+            if len(pfns) > max_files:
+                logger.info(
+                    "max_files=%d applied: using first %d of %d PFNs",
+                    max_files, max_files, len(pfns),
+                )
+                pfns = pfns[:max_files]
+                supplied_checksums = {k: v for k, v in supplied_checksums.items()
+                                      if k in set(pfns)}
+            elif len(pfns) < max_files:
+                logger.warning(
+                    "max_files=%d exceeds inventory size (%d PFNs); "
+                    "sampling with repetition to reach %d files",
+                    max_files, len(pfns), max_files,
+                )
+                full_cycles, remainder = divmod(max_files, len(pfns))
+                pfns = pfns * full_cycles + pfns[:remainder]
         mapping = dest_planner.plan(pfns, config)
 
         verify_checksum = config.get("transfer", {}).get("verify_checksum")
@@ -341,7 +354,7 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
                 config["tokens"]["source_read"], ssl_verify,
             )
             checksums = checksum_fetcher.fetch_all(
-                list(mapping.keys()), source_session, config
+                [src for src, dst in mapping], source_session, config
             )
 
         store.write_manifest(
@@ -433,10 +446,10 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
         failed_sources = {fr["source_surl"] for fr in failed}
         failed_sources.update(submission_failed_pfns)
 
-        retry_mapping = OrderedDict(
-            (src, dst) for src, dst in mapping.items()
+        retry_mapping = [
+            (src, dst) for src, dst in mapping
             if src in failed_sources
-        )
+        ]
 
         retry_subjobs = _submit_chunks(
             retry_mapping, checksums, config, run_id, retry_round,

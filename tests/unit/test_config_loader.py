@@ -481,6 +481,24 @@ class TestValueConstraints:
         write_yaml(data, path)
         assert load(path)["transfer"]["max_files"] is None
 
+    def test_shuffle_source_pfns_default_false(self, tmp_path):
+        path, data = _base(tmp_path)
+        write_yaml(data, path)
+        assert load(path)["transfer"]["shuffle_source_pfns"] is False
+
+    def test_shuffle_source_pfns_true_accepted(self, tmp_path):
+        path, data = _base(tmp_path)
+        data["transfer"]["shuffle_source_pfns"] = True
+        write_yaml(data, path)
+        assert load(path)["transfer"]["shuffle_source_pfns"] is True
+
+    def test_shuffle_source_pfns_non_bool_raises(self, tmp_path):
+        path, data = _base(tmp_path)
+        data["transfer"]["shuffle_source_pfns"] = "yes"
+        write_yaml(data, path)
+        with pytest.raises(ConfigError, match="shuffle_source_pfns"):
+            load(path)
+
     def test_scan_window_below_60_raises(self, tmp_path):
         path, data = _base(tmp_path)
         data["submission"] = {"scan_window_s": 59}

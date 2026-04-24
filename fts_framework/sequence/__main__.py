@@ -8,6 +8,7 @@ Usage::
     fts-sequence params.yaml
     fts-sequence params.yaml --resume sequences/20260324_abc123_scale_test/
     fts-sequence --rerun-failed sequences/20260324_abc123_scale_test/
+    fts-sequence --cancel-jobs sequences/20260324_abc123_scale_test/
     fts-sequence params.yaml --runs-dir /data/runs --log-level DEBUG
 
 Token resolution follows the same five-level priority as ``fts-run``; see
@@ -23,6 +24,8 @@ from fts_framework.sequence import state as seq_state
 from fts_framework.sequence.runner import run_sequence
 from fts_framework.sequence import loader as seq_loader
 from fts_framework.config import loader as cfg_loader
+from fts_framework.fts import canceller as fts_canceller
+from fts_framework.fts import client as fts_client_mod
 
 
 def main():
@@ -58,6 +61,12 @@ def main():
         metavar="SEQUENCE_DIR",
         default=None,
         help="Reset all failed trials to pending and rerun them",
+    )
+    mode.add_argument(
+        "--cancel-jobs",
+        metavar="SEQUENCE_DIR",
+        default=None,
+        help="Cancel all non-terminal FTS3 jobs associated with the sequence",
     )
 
     parser.add_argument(
@@ -167,6 +176,61 @@ def main():
         print()
         sys.exit(0)
 
+    # --cancel-jobs: cancel all non-terminal FTS3 jobs in a sequence directory.
+    if args.cancel_jobs:
+        seq_dir = args.cancel_jobs
+        try:
+            job_ids = fts_canceller.collect_job_ids_from_sequence(
+                seq_dir, runs_dir=args.runs_dir or "runs",
+            )
+        except Exception as exc:
+            log.error("Failed to read sequence state from %s: %s", seq_dir, exc)
+            sys.exit(1)
+
+        if not job_ids:
+            print("No non-terminal jobs found in {}.".format(seq_dir))
+            sys.exit(0)
+
+        print("Found {} non-terminal job(s) to cancel.".format(len(job_ids)))
+
+        try:
+            state = seq_state.load(seq_dir)
+            baseline = state.get("baseline_config")
+            if not baseline:
+                raise ValueError("baseline_config not recorded in state.json")
+            config = cfg_loader.load(
+                baseline,
+                token=args.token,
+                fts_submit_token=args.fts_submit_token,
+                source_read_token=args.source_read_token,
+                dest_write_token=args.dest_write_token,
+            )
+        except Exception as exc:
+            log.error("Failed to load config for FTS3 connection: %s", exc)
+            sys.exit(1)
+
+        fts_session = fts_client_mod.build_session(
+            config["tokens"]["fts_submit"],
+            config["fts"].get("ssl_verify", True),
+        )
+        fts_client = fts_client_mod.FTSClient(
+            config["fts"]["endpoint"], fts_session,
+        )
+
+        results = fts_canceller.cancel_jobs(job_ids, fts_client)
+
+        ok  = sum(1 for r in results if r["cancelled"])
+        err = len(results) - ok
+        print("\nCancel results:")
+        for r in results:
+            status = "OK" if r["cancelled"] else "FAILED ({})".format(r["error"])
+            print("  {} {}".format(r["job_id"], status))
+        print("\n{}/{} jobs cancelled{}.".format(
+            ok, len(results),
+            ", {} error(s)".format(err) if err else "",
+        ))
+        sys.exit(0 if err == 0 else 1)
+
     # Resolve params file and resume_dir from the chosen mode.
     resume_dir = args.resume
 
@@ -186,7 +250,7 @@ def main():
     else:
         params_file = args.params
         if params_file is None:
-            parser.error("params is required unless --rerun-failed is given")
+            parser.error("params is required unless --rerun-failed or --cancel-jobs is given")
 
     try:
         sequence_dir = run_sequence(
