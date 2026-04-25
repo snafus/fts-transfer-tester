@@ -94,6 +94,18 @@ def _refresh_oidc_if_needed(config, overridden_keys):
         config_loader.refresh_oidc_tokens_for_roles(config, roles_to_refresh)
 
 
+def _print_interrupt_hint(sequence_dir, params_file):
+    # type: (str, str) -> None
+    """Print resume/cancel instructions to stderr after a KeyboardInterrupt."""
+    import sys
+    sys.stderr.write("\n\nInterrupted.\n")
+    sys.stderr.write("  Sequence state saved. In-flight FTS3 jobs continue running.\n\n")
+    sys.stderr.write("  Resume:      fts-sequence {} --resume {}\n".format(
+        params_file, sequence_dir))
+    sys.stderr.write("  Cancel jobs: fts-sequence --cancel-jobs {}\n\n".format(
+        sequence_dir))
+
+
 def _write_params_copy(sequence_dir, params_file):
     # type: (str, str) -> None
     """Copy the sequence params file into the sequence directory."""
@@ -220,6 +232,9 @@ def run_sequence(params_file, resume_dir=None, runs_dir=None,
                 "Case %d trial %d completed: run_id=%s",
                 case_index, trial_index, run_id,
             )
+        except KeyboardInterrupt:
+            _print_interrupt_hint(sequence_dir, params_file)
+            raise
         except Exception as exc:
             seq_state.mark_failed(
                 sequence_dir, state, case_index, trial_index, exc,

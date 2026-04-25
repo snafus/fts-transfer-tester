@@ -264,6 +264,8 @@ def main():
         )
         print("Sequence complete: {}".format(sequence_dir))
         sys.exit(0)
+    except KeyboardInterrupt:
+        sys.exit(130)
     except Exception as exc:
         log.error("Sequence failed: %s", exc, exc_info=True)
         sys.exit(1)
