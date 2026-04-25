@@ -323,7 +323,11 @@ class TestOidcPerTrialRefresh:
             "dest_write":  "baseline_dst_tok",
         }
 
-        monkeypatch.setenv("DST_CLIENT_ID",    "cid")
+        monkeypatch.setenv("FTS_CLIENT_ID",     "cid")
+        monkeypatch.setenv("FTS_CLIENT_SECRET", "csec")
+        monkeypatch.setenv("SRC_CLIENT_ID",     "cid")
+        monkeypatch.setenv("SRC_CLIENT_SECRET", "csec")
+        monkeypatch.setenv("DST_CLIENT_ID",     "cid")
         monkeypatch.setenv("DST_CLIENT_SECRET", "csec")
 
         trial_configs = []
@@ -362,11 +366,12 @@ class TestOidcPerTrialRefresh:
         assert "case1" in trial_configs[1]
         assert trial_configs[0] != trial_configs[1]
 
-    def test_token_not_refreshed_when_no_scope_template(
+    def test_tokens_always_refreshed_per_trial(
         self, tmp_path, monkeypatch
     ):
-        """If the dest_write scope has no {dst_prefix_path}, no re-fetch on
-        dst_prefix override."""
+        """OIDC tokens are refreshed unconditionally for every trial, even when
+        the sweep parameter does not affect a scope template — prevents 403s
+        from token expiry mid-sequence."""
         import fts_framework.sequence.runner as runner_mod
         import fts_framework.config.loader as loader_mod
         import fts_framework.auth.oidc as oidc_mod
@@ -395,6 +400,9 @@ class TestOidcPerTrialRefresh:
             "dest_write":  "dst_tok",
         }
 
+        monkeypatch.setenv("DST_CLIENT_ID",     "cid")
+        monkeypatch.setenv("DST_CLIENT_SECRET", "csec")
+
         monkeypatch.setattr(
             runner_mod.seq_loader, "load",
             lambda path: {
@@ -403,7 +411,10 @@ class TestOidcPerTrialRefresh:
                 "output_base_dir": str(tmp_path),
                 "sweep_mode": "cartesian",
                 "trials": 1,
-                "cases": [{"transfer.dst_prefix": "https://dst.example.org/other"}],
+                "cases": [
+                    {"transfer.max_files": 100},
+                    {"transfer.max_files": 200},
+                ],
             },
         )
         monkeypatch.setattr(loader_mod, "load", lambda path, **kwargs: base_cfg)
@@ -416,4 +427,6 @@ class TestOidcPerTrialRefresh:
         from fts_framework.sequence.runner import run_sequence
         run_sequence("params.yaml", runs_dir=str(tmp_path))
 
-        assert len(fetch_calls) == 0
+        # One fetch per trial (2 cases × 1 trial = 2), even though max_files
+        # does not affect any scope template.
+        assert len(fetch_calls) == 2

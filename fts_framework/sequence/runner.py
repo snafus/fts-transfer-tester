@@ -58,40 +58,40 @@ def _build_trial_config(baseline_config, case_params):
     # type: (dict, dict) -> dict
     """Deep-copy *baseline_config* and apply *case_params* overrides.
 
-    If any override changes a key that affects an OIDC scope template
-    (e.g. ``transfer.dst_prefix`` when scope contains ``{dst_prefix_path}``),
-    the affected tokens are re-fetched with the updated scope.
+    Always re-fetches all OIDC tokens so that long sequences don't run later
+    trials with expired tokens.  Scope templates are re-evaluated after any
+    override that changes a prefix key.
     """
     config = copy.deepcopy(baseline_config)
     for dotkey, value in case_params.items():
         seq_loader.apply_override(config, dotkey, value)
     config.setdefault("run", {})["run_id"] = None
-    _refresh_oidc_if_needed(config, set(case_params.keys()))
+    _refresh_oidc_tokens(config, set(case_params.keys()))
     return config
 
 
-def _refresh_oidc_if_needed(config, overridden_keys):
+def _refresh_oidc_tokens(config, overridden_keys):
     # type: (dict, set) -> None
-    """Re-fetch OIDC tokens whose scope templates reference an overridden key."""
+    """Re-fetch all OIDC tokens for every trial.
+
+    Tokens have a finite lifetime (typically 1h).  Refreshing unconditionally
+    at the start of each trial prevents 403 errors in long sequences where the
+    initial token has expired by the time a later trial runs.
+
+    If a sweep parameter changes a scope-template key (e.g. ``transfer.dst_prefix``),
+    the affected roles must be re-fetched with the updated scope regardless —
+    this is handled as part of the unconditional refresh.
+    """
     oidc_cfg = config.get("oidc", {})
     if not oidc_cfg.get("enabled"):
         return
 
-    roles_to_refresh = []
-    for dotkey, template_var in _SCOPE_PREFIX_VARS.items():
-        if dotkey not in overridden_keys:
-            continue
-        for role, role_cfg in (oidc_cfg.get("roles") or {}).items():
-            if template_var in (role_cfg.get("scope") or ""):
-                if role not in roles_to_refresh:
-                    roles_to_refresh.append(role)
+    all_roles = list((oidc_cfg.get("roles") or {}).keys())
+    if not all_roles:
+        return
 
-    if roles_to_refresh:
-        logger.debug(
-            "Re-fetching OIDC tokens for %s (scope prefix override: %s)",
-            roles_to_refresh, overridden_keys & set(_SCOPE_PREFIX_VARS),
-        )
-        config_loader.refresh_oidc_tokens_for_roles(config, roles_to_refresh)
+    logger.debug("Refreshing OIDC tokens for all roles: %s", all_roles)
+    config_loader.refresh_oidc_tokens_for_roles(config, all_roles)
 
 
 def _print_interrupt_hint(sequence_dir, params_file):
