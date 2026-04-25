@@ -174,6 +174,10 @@ def compute(file_records, retry_records, config, run_id):
     bucket_width_s = config.get("output", {}).get("timeseries_bucket_s", 60)
     timeseries = _compute_timeseries(finished, bucket_width_s)
 
+    tp_buckets = [b["aggregate_throughput_bytes_s"] for b in timeseries
+                  if b["aggregate_throughput_bytes_s"] > 0]
+    peak_aggregate_throughput = max(tp_buckets) if tp_buckets else None
+
     max_files = config.get("transfer", {}).get("max_files")
 
     return {
@@ -209,6 +213,7 @@ def compute(file_records, retry_records, config, run_id):
         "throughput_p99": throughput_p99,
         "throughput_max": throughput_max,
         "aggregate_throughput_bytes_per_s": agg_tp,
+        "peak_aggregate_throughput_bytes_per_s": peak_aggregate_throughput,
 
         # Duration
         "duration_mean_s": duration_mean,

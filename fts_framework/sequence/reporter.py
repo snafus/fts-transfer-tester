@@ -30,7 +30,8 @@ _SUMMARY_METRICS = [
     ("failed",                            "Files Failed"),
     ("success_rate",                      "Success Rate"),
     ("peak_concurrency",                  "Peak Concurrency"),
-    ("aggregate_throughput_bytes_per_s",  "Agg TP (MB/s)"),
+    ("aggregate_throughput_bytes_per_s",       "Agg TP (MB/s)"),
+    ("peak_aggregate_throughput_bytes_per_s",  "Peak Agg TP (MB/s)"),
     ("throughput_mean",                   "TP Mean (MB/s)"),
     ("throughput_p50",                    "TP p50 (MB/s)"),
     ("throughput_p90",                    "TP p90 (MB/s)"),
@@ -42,6 +43,7 @@ _SUMMARY_METRICS = [
 # Keys whose values are in bytes/s and must be formatted as MB/s.
 _THROUGHPUT_KEYS = frozenset([
     "aggregate_throughput_bytes_per_s",
+    "peak_aggregate_throughput_bytes_per_s",
     "throughput_mean",
     "throughput_p50",
     "throughput_p90",
@@ -261,7 +263,7 @@ def _write_markdown(sequence_dir, rows, aggregates, state):
         headers = (
             ["Case"]
             + param_keys
-            + ["Trials", "Success Rate", "Agg TP (MB/s)",
+            + ["Trials", "Success Rate", "Agg TP (MB/s)", "Peak Agg TP (MB/s)",
                "TP Mean (MB/s)", "TP p50 (MB/s)", "TP p90 (MB/s)",
                "Wall (s)"]
         )
@@ -289,6 +291,7 @@ def _write_markdown(sequence_dir, rows, aggregates, state):
                     trials_str,
                     _mv("success_rate"),
                     _mv("aggregate_throughput_bytes_per_s"),
+                    _mv("peak_aggregate_throughput_bytes_per_s"),
                     _mv("throughput_mean"),
                     _mv("throughput_p50"),
                     _mv("throughput_p90"),
@@ -386,6 +389,8 @@ def print_console_summary(sequence_dir, state, rows, aggregates):
                     lambda agg: _mv_str(agg, "success_rate")))
     columns.append(("Agg TP MB/s",
                     lambda agg: _mv_str(agg, "aggregate_throughput_bytes_per_s")))
+    columns.append(("Peak TP MB/s",
+                    lambda agg: _mv_str(agg, "peak_aggregate_throughput_bytes_per_s")))
     columns.append(("Mean MB/s",
                     lambda agg: _mv_str(agg, "throughput_mean")))
     columns.append(("p50 MB/s",
