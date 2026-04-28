@@ -20,7 +20,7 @@ import os
 import statistics
 import sys
 
-from fts_framework.sequence.state import COMPLETED, FAILED
+from fts_framework.sequence.state import COMPLETED, FAILED, SKIPPED
 
 
 # Snapshot keys to include in summary reports, with display labels.
@@ -142,12 +142,14 @@ def _aggregate_cases(state, rows):
         ]
         failed_count = sum(1 for r in case_rows if r["status"] == FAILED)
 
+        skipped_count = sum(1 for r in case_rows if r["status"] == SKIPPED)
         agg = {
             "case_index":  ci,
             "params":      case["params"],
             "n_total":     len(case_rows),
             "n_completed": len(completed),
             "n_failed":    failed_count,
+            "n_skipped":   skipped_count,
         }
         for key, _ in _SUMMARY_METRICS:
             vals = [r[key] for r in completed if r.get(key) is not None]
@@ -282,8 +284,11 @@ def _write_markdown(sequence_dir, rows, aggregates, state):
                     s += " ± " + _fmt_val(key, sd)
                 return s
 
-            param_vals  = [str(agg["params"].get(k, "-")) for k in param_keys]
-            trials_str  = "{}/{}".format(agg["n_completed"], agg["n_total"])
+            param_vals = [str(agg["params"].get(k, "-")) for k in param_keys]
+            n_planned  = agg["n_total"] - agg.get("n_skipped", 0)
+            trials_str = "{}/{}".format(agg["n_completed"], n_planned)
+            if agg.get("n_skipped"):
+                trials_str += " (+{} skipped)".format(agg["n_skipped"])
             row_vals = (
                 [str(agg["case_index"])]
                 + param_vals
@@ -353,6 +358,7 @@ def print_console_summary(sequence_dir, state, rows, aggregates):
     total     = n_cases * n_trials
     completed = sum(1 for r in rows if r["status"] == COMPLETED)
     failed    = sum(1 for r in rows if r["status"] == FAILED)
+    skipped   = sum(1 for r in rows if r["status"] == SKIPPED)
 
     out = sys.stdout
 
@@ -365,9 +371,10 @@ def print_console_summary(sequence_dir, state, rows, aggregates):
     out.write("ID:        {}{}\n".format(
         seq_id, "  ({})".format(label) if label else "",
     ))
+    skipped_str = "   Skipped: {}".format(skipped) if skipped else ""
     out.write("Cases:     {}   Trials/case: {}   Total: {}   "
-              "Completed: {}   Failed: {}\n".format(
-                  n_cases, n_trials, total, completed, failed,
+              "Completed: {}   Failed: {}{}\n".format(
+                  n_cases, n_trials, total, completed, failed, skipped_str,
               ))
     out.write("\n")
 
@@ -383,8 +390,11 @@ def print_console_summary(sequence_dir, state, rows, aggregates):
     columns.append(("Case", lambda agg: str(agg["case_index"])))
     for pk in param_keys:
         columns.append((pk, lambda agg, _pk=pk: str(agg["params"].get(_pk, "-"))))
-    columns.append(("Trials",
-                    lambda agg: "{}/{}".format(agg["n_completed"], agg["n_total"])))
+    columns.append(("Trials", lambda agg: "{}/{}{}".format(
+        agg["n_completed"],
+        agg["n_total"] - agg.get("n_skipped", 0),
+        " (+{} skip)".format(agg["n_skipped"]) if agg.get("n_skipped") else "",
+    )))
     columns.append(("Succ Rate",
                     lambda agg: _mv_str(agg, "success_rate")))
     columns.append(("Agg TP MB/s",

@@ -54,6 +54,7 @@ PENDING = "pending"
 RUNNING = "running"
 COMPLETED = "completed"
 FAILED = "failed"
+SKIPPED = "skipped"
 
 
 def _now_iso():
@@ -187,12 +188,39 @@ def reset_failed_to_pending(sequence_dir, state):
     return count
 
 
+def skip_cases_from(sequence_dir, state, from_case_index):
+    # type: (str, dict, int) -> int
+    """Mark all pending/running trials in cases with index >= *from_case_index* as skipped.
+
+    Completed and failed trials are not touched.
+
+    Args:
+        sequence_dir (str): Sequence output directory.
+        state (dict): Current state dict (mutated in place).
+        from_case_index (int): First case index to skip (inclusive).
+
+    Returns:
+        int: Number of trials marked as skipped.
+    """
+    count = 0
+    for case in state["cases"]:
+        if case["case_index"] >= from_case_index:
+            for trial in case["trials"]:
+                if trial["status"] in (PENDING, RUNNING):
+                    trial["status"] = SKIPPED
+                    count += 1
+    if count:
+        _write(sequence_dir, state)
+    return count
+
+
 def pending_trials(state):
     # type: (dict) -> list
     """Return list of ``(case_index, trial_index)`` that need to run.
 
     Both ``pending`` and ``running`` trials are returned; ``running`` entries
     represent trials that were interrupted mid-run and must be retried.
+    ``skipped`` trials are excluded.
 
     Returns:
         list[tuple[int, int]]: Ordered list of (case_index, trial_index).

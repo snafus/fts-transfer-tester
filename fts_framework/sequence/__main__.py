@@ -21,6 +21,7 @@ import os
 import sys
 
 from fts_framework.sequence import state as seq_state
+from fts_framework.sequence import reporter as seq_reporter
 from fts_framework.sequence.runner import run_sequence
 from fts_framework.sequence import loader as seq_loader
 from fts_framework.config import loader as cfg_loader
@@ -68,6 +69,19 @@ def main():
         default=None,
         help="Cancel all non-terminal FTS3 jobs associated with the sequence",
     )
+    mode.add_argument(
+        "--report",
+        metavar="SEQUENCE_DIR",
+        default=None,
+        help="Regenerate summary reports from an existing sequence directory "
+             "(safe to run mid-sequence)",
+    )
+    mode.add_argument(
+        "--skip-from-case",
+        metavar="SEQUENCE_DIR",
+        default=None,
+        help="Mark all pending trials in cases from --from-case-index onwards as skipped",
+    )
 
     parser.add_argument(
         "--runs-dir",
@@ -75,6 +89,13 @@ def main():
         metavar="DIR",
         help="Base directory for individual run outputs "
              "(default: <sequence_dir>/runs/)",
+    )
+    parser.add_argument(
+        "--from-case-index",
+        type=int,
+        default=None,
+        metavar="N",
+        help="First case index to skip (required with --skip-from-case)",
     )
     parser.add_argument(
         "--log-level",
@@ -230,6 +251,49 @@ def main():
             ", {} error(s)".format(err) if err else "",
         ))
         sys.exit(0 if err == 0 else 1)
+
+    # --report: regenerate summary reports without running anything.
+    if args.report:
+        seq_dir = args.report
+        try:
+            state = seq_state.load(seq_dir)
+            runs_dir_val = (
+                args.runs_dir
+                or state.get("runs_dir")
+                or os.path.join(seq_dir, "runs")
+            )
+            seq_reporter.generate_summary(seq_dir, state, runs_dir=runs_dir_val)
+        except Exception as exc:
+            log.error("Failed to generate report for %s: %s", seq_dir, exc,
+                      exc_info=True)
+            sys.exit(1)
+        sys.exit(0)
+
+    # --skip-from-case: mark pending trials in cases >= N as skipped.
+    if args.skip_from_case:
+        seq_dir = args.skip_from_case
+        if args.from_case_index is None:
+            parser.error("--skip-from-case requires --from-case-index N")
+        try:
+            state = seq_state.load(seq_dir)
+            n_skipped = seq_state.skip_cases_from(
+                seq_dir, state, args.from_case_index,
+            )
+            if n_skipped == 0:
+                log.warning(
+                    "No pending trials found in cases from index %d — nothing skipped",
+                    args.from_case_index,
+                )
+            else:
+                log.info(
+                    "Marked %d trial(s) as skipped (cases from index %d onwards)",
+                    n_skipped, args.from_case_index,
+                )
+        except Exception as exc:
+            log.error("Failed to update state in %s: %s", seq_dir, exc,
+                      exc_info=True)
+            sys.exit(1)
+        sys.exit(0)
 
     # Resolve params file and resume_dir from the chosen mode.
     resume_dir = args.resume

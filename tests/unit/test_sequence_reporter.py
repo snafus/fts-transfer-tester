@@ -8,7 +8,7 @@ import tempfile
 import pytest
 
 from fts_framework.sequence import reporter as seq_reporter
-from fts_framework.sequence.state import COMPLETED, FAILED, PENDING
+from fts_framework.sequence.state import COMPLETED, FAILED, PENDING, SKIPPED
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +50,10 @@ def _mark_completed_inmem(state, case_index, trial_index, run_id):
 def _mark_failed_inmem(state, case_index, trial_index, error="boom"):
     state["cases"][case_index]["trials"][trial_index]["status"] = FAILED
     state["cases"][case_index]["trials"][trial_index]["error"] = error
+
+
+def _mark_skipped_inmem(state, case_index, trial_index):
+    state["cases"][case_index]["trials"][trial_index]["status"] = SKIPPED
 
 
 def _write_snapshot(runs_dir, run_id, snapshot):
@@ -443,3 +447,77 @@ class TestConsoleSummary:
             state = _make_state()
             out = self._run(state, capsys=capsys, tmp=tmp)
             assert "reports" in out
+
+
+# ---------------------------------------------------------------------------
+# Skipped trial handling
+# ---------------------------------------------------------------------------
+
+class TestSkippedTrials:
+    def test_skipped_status_appears_in_csv(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = _make_state(n_cases=1, trials=2)
+            _mark_completed_inmem(state, 0, 0, "run_a")
+            _mark_skipped_inmem(state, 0, 1)
+            seq_reporter.generate_summary(tmp, state, runs_dir=tmp)
+            with open(os.path.join(tmp, "reports", "summary.csv"), newline="") as fh:
+                rows = list(csv.DictReader(fh))
+        statuses = {r["trial_index"]: r["status"] for r in rows}
+        assert statuses["0"] == COMPLETED
+        assert statuses["1"] == SKIPPED
+
+    def test_skipped_trial_excluded_from_aggregate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runs_dir = os.path.join(tmp, "runs")
+            os.makedirs(runs_dir)
+            state = _make_state(n_cases=1, trials=2)
+            _mark_completed_inmem(state, 0, 0, "run_ok")
+            _mark_skipped_inmem(state, 0, 1)
+            _write_snapshot(runs_dir, "run_ok", _default_snapshot())
+            seq_reporter.generate_summary(tmp, state, runs_dir=runs_dir)
+            with open(os.path.join(tmp, "reports", "summary.json")) as fh:
+                data = json.load(fh)
+        agg = data["cases"][0]
+        assert agg["n_completed"] == 1
+        assert agg["n_skipped"]   == 1
+        # Metric mean should be from the one completed trial, not None
+        assert agg["throughput_mean_mean"] is not None
+
+    def test_n_skipped_in_aggregate_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = _make_state(n_cases=1, trials=3)
+            _mark_skipped_inmem(state, 0, 1)
+            _mark_skipped_inmem(state, 0, 2)
+            seq_reporter.generate_summary(tmp, state, runs_dir=tmp)
+            with open(os.path.join(tmp, "reports", "summary.json")) as fh:
+                data = json.load(fh)
+        agg = data["cases"][0]
+        assert agg["n_skipped"] == 2
+        assert agg["n_total"]   == 3
+
+    def test_skipped_shown_in_console_header(self, capsys):
+        state = _make_state(n_cases=1, trials=2)
+        _mark_skipped_inmem(state, 0, 1)
+        from fts_framework.sequence import reporter as mod
+        rows = mod._collect_rows(state, "")
+        aggregates = mod._aggregate_cases(state, rows)
+        mod.print_console_summary("", state, rows, aggregates)
+        out = capsys.readouterr().out
+        assert "Skipped: 1" in out
+
+    def test_trials_column_shows_skipped_annotation_in_markdown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = _make_state(n_cases=1, trials=3)
+            _mark_skipped_inmem(state, 0, 2)
+            seq_reporter.generate_summary(tmp, state, runs_dir=tmp)
+            with open(os.path.join(tmp, "reports", "summary.md")) as fh:
+                content = fh.read()
+        assert "skipped" in content.lower()
+
+    def test_no_skipped_no_annotation(self, capsys):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = _make_state(n_cases=1, trials=2)
+            seq_reporter.generate_summary(tmp, state, runs_dir=tmp)
+            with open(os.path.join(tmp, "reports", "summary.md")) as fh:
+                content = fh.read()
+        assert "skipped" not in content.lower()

@@ -10,6 +10,7 @@ from fts_framework.sequence.state import (
     FAILED,
     PENDING,
     RUNNING,
+    SKIPPED,
     create,
     load,
     mark_completed,
@@ -17,6 +18,7 @@ from fts_framework.sequence.state import (
     mark_running,
     pending_trials,
     reset_failed_to_pending,
+    skip_cases_from,
 )
 
 
@@ -268,3 +270,84 @@ class TestResetFailedToPending:
             reset_failed_to_pending(tmp, state)
             mtime_after = os.path.getmtime(path)
         assert mtime_after == mtime_before
+
+
+# ---------------------------------------------------------------------------
+# skip_cases_from
+# ---------------------------------------------------------------------------
+
+class TestSkipCasesFrom:
+    def _fresh(self, tmp, n_cases=4, trials=2):
+        return create(tmp, "s", _seq_params(), _make_cases(n_cases), trials=trials)
+
+    def test_pending_trials_in_target_cases_marked_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._fresh(tmp)
+            skip_cases_from(tmp, state, from_case_index=2)
+        for case in state["cases"]:
+            for trial in case["trials"]:
+                if case["case_index"] >= 2:
+                    assert trial["status"] == SKIPPED
+                else:
+                    assert trial["status"] == PENDING
+
+    def test_cases_before_from_index_not_touched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._fresh(tmp)
+            skip_cases_from(tmp, state, from_case_index=3)
+        for trial in state["cases"][0]["trials"]:
+            assert trial["status"] == PENDING
+        for trial in state["cases"][1]["trials"]:
+            assert trial["status"] == PENDING
+
+    def test_completed_trials_not_touched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._fresh(tmp, n_cases=2, trials=2)
+            mark_completed(tmp, state, 1, 0)
+            skip_cases_from(tmp, state, from_case_index=1)
+        assert state["cases"][1]["trials"][0]["status"] == COMPLETED
+        assert state["cases"][1]["trials"][1]["status"] == SKIPPED
+
+    def test_failed_trials_not_touched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._fresh(tmp, n_cases=2, trials=2)
+            mark_failed(tmp, state, 1, 0, "err")
+            skip_cases_from(tmp, state, from_case_index=1)
+        assert state["cases"][1]["trials"][0]["status"] == FAILED
+        assert state["cases"][1]["trials"][1]["status"] == SKIPPED
+
+    def test_returns_count_of_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._fresh(tmp, n_cases=3, trials=2)
+            n = skip_cases_from(tmp, state, from_case_index=1)
+        assert n == 4   # cases 1 and 2, 2 trials each
+
+    def test_returns_zero_when_nothing_pending(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._fresh(tmp, n_cases=2, trials=1)
+            mark_completed(tmp, state, 1, 0)
+            n = skip_cases_from(tmp, state, from_case_index=1)
+        assert n == 0
+
+    def test_persisted_to_disk(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._fresh(tmp, n_cases=2, trials=1)
+            skip_cases_from(tmp, state, from_case_index=1)
+            reloaded = load(tmp)
+        assert reloaded["cases"][1]["trials"][0]["status"] == SKIPPED
+
+    def test_skipped_excluded_from_pending_trials(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._fresh(tmp, n_cases=3, trials=1)
+            skip_cases_from(tmp, state, from_case_index=2)
+        pending = pending_trials(state)
+        assert (2, 0) not in pending
+        assert (0, 0) in pending
+        assert (1, 0) in pending
+
+    def test_from_index_zero_skips_all(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._fresh(tmp, n_cases=2, trials=2)
+            n = skip_cases_from(tmp, state, from_case_index=0)
+        assert n == 4
+        assert pending_trials(state) == []
