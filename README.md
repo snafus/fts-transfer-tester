@@ -530,10 +530,14 @@ fts-sequence <params> [options]
 
 | Argument | Description |
 |---|---|
-| `params` | Path to sequence parameter YAML file (required, unless `--rerun-failed` is given) |
+| `params` | Path to sequence parameter YAML file (required, unless `--rerun-failed` or `--cancel-jobs` is given) |
 | `--check-tokens` | Resolve and display token sources, fetch OIDC tokens, then exit without running |
 | `--resume SEQUENCE_DIR` | Resume an interrupted sequence from its output directory |
 | `--rerun-failed SEQUENCE_DIR` | Reset all `failed` trials to `pending` and rerun them |
+| `--report SEQUENCE_DIR` | Regenerate summary reports from completed runs without running anything (safe mid-sequence) |
+| `--skip-from-case SEQUENCE_DIR` | Mark all pending trials in cases from `--from-case-index` onwards as `skipped` |
+| `--from-case-index N` | First case index to skip (required with `--skip-from-case`) |
+| `--cancel-jobs SEQUENCE_DIR` | Cancel all non-terminal FTS3 jobs associated with the sequence |
 | `--runs-dir DIR` | Base directory for individual run outputs (default: `runs/`) |
 | `--log-level LEVEL` | Logging verbosity (default: `INFO`) |
 | `--token TOKEN` | Shared bearer token for all roles |
@@ -584,19 +588,38 @@ sequences/<sequence_id>/
 
 Individual campaign runs are written to `runs/<run_id>/` as normal.
 
-### Resumption
+### Resumption and mid-sequence management
 
-Each trial is recorded in `state.json` as `pending | running | completed | failed` before it starts.  A trial left in `running` state (process interrupted mid-run) is treated as pending on resume.
+Each trial is recorded in `state.json` with one of these statuses:
+
+| Status | Meaning |
+|---|---|
+| `pending` | Not yet started |
+| `running` | Started; treated as pending on resume (handles process crash mid-run) |
+| `completed` | `run_campaign()` returned without exception |
+| `failed` | `run_campaign()` raised an exception; error logged; sequence continues |
+| `skipped` | Explicitly excluded via `--skip-from-case`; never run or counted in aggregates |
 
 ```bash
 # Start a sequence
 fts-sequence params.yaml
 
-# Resume after interruption
+# Resume after interruption (Ctrl+C prints the exact command to use)
 fts-sequence params.yaml --resume sequences/20260324_abc123_scale_test/
 
 # Reset all failed trials to pending and rerun them
 fts-sequence --rerun-failed sequences/20260324_abc123_scale_test/
+
+# Regenerate summary reports from whatever runs have completed (safe mid-sequence)
+fts-sequence --report sequences/20260324_abc123_scale_test/
+
+# Truncate a sweep mid-run: skip cases 3 onwards (e.g. early results are sufficient)
+fts-sequence --skip-from-case sequences/20260324_abc123_scale_test/ --from-case-index 3
+# Then resume to finish the remaining pending cases and generate final reports
+fts-sequence params.yaml --resume sequences/20260324_abc123_scale_test/
+
+# Cancel all non-terminal FTS3 jobs in a sequence
+fts-sequence --cancel-jobs sequences/20260324_abc123_scale_test/
 
 # Verify token sources and fetch OIDC tokens before committing to a run
 fts-sequence params.yaml --check-tokens
@@ -958,7 +981,7 @@ Integration tests require a live FTS3 endpoint:
 FTS_INTEGRATION_ENDPOINT=https://fts.example.org:8446 pytest tests/integration/ -v
 ```
 
-**891 unit tests** cover all modules: config loader (including OIDC resolution and scope templates), auth env loader, OIDC token fetch, inventory, destination planner (single and weighted multi-destination), checksum fetcher, FTS client, submission (including 500-recovery and per-file token forwarding), poller, collector, persistence, resume controller, metrics engine, cleanup manager, reporting renderer, runner orchestration, and sequence runner (loader, state, reporter, per-trial OIDC refresh).
+**940 unit tests** cover all modules: config loader (including OIDC resolution and scope templates), auth env loader, OIDC token fetch, inventory, destination planner (single and weighted multi-destination), checksum fetcher, FTS client, submission (including 500-recovery and per-file token forwarding), poller, collector, persistence, resume controller, metrics engine, cleanup manager, reporting renderer, runner orchestration, and sequence runner (loader, state, reporter, per-trial OIDC refresh).
 
 ---
 
