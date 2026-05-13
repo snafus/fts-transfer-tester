@@ -221,6 +221,15 @@ class TestFTSClientGet:
             client.get("/whoami")
 
     @resp_lib.activate
+    def test_get_403_raises_token_expired(self):
+        """FTS3 may return 403 Forbidden for an expired/invalid token."""
+        resp_lib.add(resp_lib.GET, ENDPOINT + "/jobs/some-id", status=403)
+        session = build_session(TOKEN, True)
+        client = FTSClient(ENDPOINT, session)
+        with pytest.raises(TokenExpiredError):
+            client.get("/jobs/some-id")
+
+    @resp_lib.activate
     def test_get_404_raises_http_error(self):
         """Non-2xx non-401 responses from GET raise HTTPError, not ValueError."""
         resp_lib.add(resp_lib.GET, ENDPOINT + "/jobs/missing", status=404, body="not found")

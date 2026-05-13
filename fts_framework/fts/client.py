@@ -9,8 +9,8 @@ Provides a ``requests.Session`` factory and an ``FTSClient`` wrapper that:
 * Controls SSL verification (system bundle, custom CA path, or disabled).
 * Applies exponential-backoff retries for transient HTTP errors (429, 502,
   503, 504) and ``requests`` connection/timeout exceptions.
-* Raises ``TokenExpiredError`` on HTTP 401 (token managed by FTS3; the
-  framework does not refresh tokens).
+* Raises ``TokenExpiredError`` on HTTP 401 or 403 (FTS3 returns either
+  status when the bearer token has expired or lacks permission).
 
 All network I/O goes through ``FTSClient.request()``.  Higher-level modules
 call ``FTSClient.get()`` and ``FTSClient.post()`` which return parsed JSON or
@@ -169,6 +169,11 @@ class FTSClient(object):
         self.session = session
         self.max_retries = max_retries
 
+    def update_token(self, token):
+        # type: (str) -> None
+        """Replace the bearer token on the underlying session."""
+        self.session.headers["Authorization"] = "Bearer {}".format(token)
+
     def _url(self, path):
         # type: (str) -> str
         """Return absolute URL for *path* (must start with '/')."""
@@ -189,7 +194,7 @@ class FTSClient(object):
             requests.Response
 
         Raises:
-            TokenExpiredError: On HTTP 401.
+            TokenExpiredError: On HTTP 401 or 403.
             requests.RequestException: On unrecoverable connection failure.
         """
         url = self._url(path)
@@ -199,7 +204,7 @@ class FTSClient(object):
             max_retries=self.max_retries,
             **kwargs
         )
-        if resp.status_code == 401:
+        if resp.status_code in (401, 403):
             raise TokenExpiredError()
         return resp
 

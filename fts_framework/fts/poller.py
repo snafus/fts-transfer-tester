@@ -34,6 +34,7 @@ import time
 
 import requests as req_lib
 
+from fts_framework.config import loader as _config_loader
 from fts_framework.exceptions import PollingTimeoutError, TokenExpiredError
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,25 @@ def _derive_state_from_files(fts_client, job_id):
     return "FINISHEDDIRTY"
 
 
+def _attempt_oidc_refresh(config, fts_client):
+    # type: (dict, object) -> bool
+    """Attempt to re-fetch the fts_submit OIDC token and update the client session.
+
+    Returns True if a new token was obtained and applied; False otherwise.
+    Only acts when ``oidc.enabled`` is True in the config.
+    """
+    if not config.get("oidc", {}).get("enabled"):
+        return False
+    try:
+        _config_loader.refresh_oidc_tokens_for_roles(config, ["fts_submit"])
+        fts_client.update_token(config["tokens"]["fts_submit"])
+        logger.info("Bearer token refreshed mid-poll via OIDC")
+        return True
+    except Exception as exc:
+        logger.warning("Mid-poll OIDC token refresh failed: %s", exc)
+        return False
+
+
 def poll_to_completion(subjobs, fts_client, config):
     # type: (list, object, dict) -> list
     """Poll all jobs in *subjobs* until every job reaches a terminal state.
@@ -128,9 +148,9 @@ def poll_to_completion(subjobs, fts_client, config):
     Raises:
         PollingTimeoutError: If ``campaign_timeout_s`` is exceeded before all
             jobs reach a terminal state.
-        TokenExpiredError: Propagated from ``fts_client.get()`` on HTTP 401.
-        requests.HTTPError: Propagated on unrecoverable HTTP error.
-        requests.RequestException: Propagated on connection failure.
+        TokenExpiredError: After ``poll_error_max_consecutive`` consecutive
+            poll rounds that produced a 401 response.  If ``oidc.enabled`` is
+            True a token refresh is attempted once per round before counting.
     """
     poll_cfg = config["polling"]
     interval = float(poll_cfg["initial_interval_s"])
@@ -138,6 +158,7 @@ def poll_to_completion(subjobs, fts_client, config):
     max_interval = float(poll_cfg["max_interval_s"])
     campaign_timeout_s = poll_cfg["campaign_timeout_s"]
     stuck_active_check_rounds = poll_cfg.get("stuck_active_check_rounds", 10)
+    poll_error_max = poll_cfg.get("poll_error_max_consecutive", 3)
 
     deadline = time.time() + campaign_timeout_s
 
@@ -160,6 +181,10 @@ def poll_to_completion(subjobs, fts_client, config):
     poll_count = 0
     # Counts consecutive non-terminal poll rounds per job_id (for stuck detection).
     _nonterminal_rounds = {}
+    # Counts consecutive non-transient HTTP errors per job_id.
+    _poll_error_counts = {}
+    # Counts consecutive poll rounds that produced at least one HTTP 401.
+    _consecutive_401_rounds = 0
 
     while active:
         if time.time() > deadline:
@@ -168,24 +193,48 @@ def poll_to_completion(subjobs, fts_client, config):
         logger.info("Poll round %d: sleeping %ds", poll_count + 1, int(interval))
         time.sleep(interval)
         poll_count += 1
+        _had_401_this_round = False
+        _refresh_attempted_this_round = False
 
         for job_id in list(active.keys()):
             try:
                 job_data = fts_client.get("/jobs/{}".format(job_id))
+                _poll_error_counts[job_id] = 0
             except TokenExpiredError:
-                raise
+                _had_401_this_round = True
+                if not _refresh_attempted_this_round:
+                    _refresh_attempted_this_round = True
+                    _attempt_oidc_refresh(config, fts_client)
+                logger.warning(
+                    "HTTP 401 (token expired) polling job %s "
+                    "(consecutive_401_rounds=%d, max=%d) — will retry next round",
+                    job_id, _consecutive_401_rounds + 1, poll_error_max,
+                )
+                continue
             except req_lib.RequestException as exc:
-                # Re-raise permanent HTTP errors (non-transient status codes).
-                # Swallow only: ConnectionError, Timeout, and HTTPError whose
-                # status code is in the transient set (429/502/503/504) —
-                # these arise when fts_request_with_retry exhausts its retries
-                # on a gateway-level failure while the job has already finished.
                 if isinstance(exc, req_lib.HTTPError):
                     status = getattr(
                         getattr(exc, "response", None), "status_code", None
                     )
                     if status not in (429, 502, 503, 504):
-                        raise
+                        count = _poll_error_counts.get(job_id, 0) + 1
+                        _poll_error_counts[job_id] = count
+                        logger.warning(
+                            "Non-transient HTTP error polling job %s: %s "
+                            "(consecutive=%d/%d)",
+                            job_id, exc, count, poll_error_max,
+                        )
+                        if count >= poll_error_max:
+                            logger.error(
+                                "Job %s marked POLL_FAILED after %d consecutive "
+                                "non-transient HTTP errors",
+                                job_id, count,
+                            )
+                            active[job_id]["status"] = "POLL_FAILED"
+                            active[job_id]["terminal"] = True
+                            del active[job_id]
+                            _poll_error_counts.pop(job_id, None)
+                        continue
                 logger.warning(
                     "Transient error polling job %s: %s — will retry next round",
                     job_id, exc,
@@ -248,6 +297,13 @@ def poll_to_completion(subjobs, fts_client, config):
                             active[job_id]["status"] = derived
                             active[job_id]["terminal"] = True
                             del active[job_id]
+
+        if _had_401_this_round:
+            _consecutive_401_rounds += 1
+            if _consecutive_401_rounds >= poll_error_max:
+                raise TokenExpiredError()
+        else:
+            _consecutive_401_rounds = 0
 
         # Back off for next round, capped at max_interval
         interval = min(interval * backoff_multiplier, max_interval)
