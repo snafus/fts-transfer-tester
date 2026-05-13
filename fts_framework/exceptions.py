@@ -93,10 +93,9 @@ class PollingTimeoutError(FTSFrameworkError):
 
 
 class TokenExpiredError(FTSFrameworkError):
-    """Raised when FTS3 returns HTTP 401, indicating the bearer token has expired.
-
-    FTS3 manages token refresh; this error signals the operator must re-acquire
-    a token and resume the run.
+    """Raised when FTS3 returns HTTP 401 or 403, indicating the bearer token
+    has expired or been rejected.  FTS3 may return either status for auth
+    failures depending on configuration.
 
     Attributes:
         job_id (str or None): Job ID being polled when expiry was detected, if known.

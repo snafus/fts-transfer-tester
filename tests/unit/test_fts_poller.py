@@ -23,6 +23,7 @@ class _FakeClient(object):
         # responses: list of dicts (job data) or exceptions to raise
         self._responses = list(responses)
         self.get_calls = []  # list of paths called
+        self.update_token_calls = []  # tokens passed to update_token()
 
     def get(self, path, **kwargs):
         self.get_calls.append(path)
@@ -33,19 +34,24 @@ class _FakeClient(object):
             raise item
         return item
 
+    def update_token(self, token):
+        self.update_token_calls.append(token)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 def _config(initial_interval_s=0, backoff_multiplier=1.0,
-            max_interval_s=0, campaign_timeout_s=3600):
+            max_interval_s=0, campaign_timeout_s=3600,
+            poll_error_max_consecutive=3):
     return {
         "polling": {
             "initial_interval_s": initial_interval_s,
             "backoff_multiplier": backoff_multiplier,
             "max_interval_s": max_interval_s,
             "campaign_timeout_s": campaign_timeout_s,
+            "poll_error_max_consecutive": poll_error_max_consecutive,
         }
     }
 
@@ -284,13 +290,99 @@ class TestPollingTimeout:
 # ---------------------------------------------------------------------------
 
 class TestTokenExpiry:
-    def test_token_expired_propagates(self, monkeypatch):
+    def test_single_401_swallowed_and_retried(self, monkeypatch):
+        """A single 401 must not immediately fail the campaign."""
         import fts_framework.fts.poller as mod
         monkeypatch.setattr(mod.time, "sleep", lambda s: None)
-        client = _FakeClient([TokenExpiredError("job-1")])
-        subjobs = [_subjob("job-1")]
+        client = _FakeClient([TokenExpiredError("job-1"), {"job_state": "FINISHED"}])
+        result = poll_to_completion([_subjob("job-1")], client, _config())
+        assert result[0]["status"] == "FINISHED"
+        assert len(client.get_calls) == 2
+
+    def test_token_expired_raised_after_max_consecutive_rounds(self, monkeypatch):
+        """TokenExpiredError is raised after poll_error_max_consecutive 401 rounds."""
+        import fts_framework.fts.poller as mod
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+        # poll_error_max_consecutive=2: two consecutive 401 rounds → raise
+        client = _FakeClient([
+            TokenExpiredError("job-1"),
+            TokenExpiredError("job-1"),
+        ])
         with pytest.raises(TokenExpiredError):
-            poll_to_completion(subjobs, client, _config())
+            poll_to_completion([_subjob("job-1")], client,
+                               _config(poll_error_max_consecutive=2))
+
+    def test_token_expired_count_resets_on_clean_round(self, monkeypatch):
+        """A clean poll round resets the consecutive-401 counter."""
+        import fts_framework.fts.poller as mod
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+        # 401 → ACTIVE (clean round, counter resets) → 401 → FINISHED
+        # With max=2, two consecutive 401s would raise; here they are separated
+        # by a clean round so the counter never hits the threshold.
+        client = _FakeClient([
+            TokenExpiredError("job-1"),
+            {"job_state": "ACTIVE"},
+            TokenExpiredError("job-1"),
+            {"job_state": "FINISHED"},
+        ])
+        result = poll_to_completion([_subjob("job-1")], client,
+                                    _config(poll_error_max_consecutive=2))
+        assert result[0]["status"] == "FINISHED"
+
+    def test_oidc_refresh_attempted_on_401(self, monkeypatch):
+        """When oidc.enabled, refresh is called once per 401 round."""
+        import fts_framework.fts.poller as mod
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+
+        refresh_calls = []
+
+        def fake_refresh(cfg, roles):
+            refresh_calls.append(roles)
+            cfg.setdefault("tokens", {})["fts_submit"] = "new-token"
+
+        monkeypatch.setattr(mod._config_loader,
+                            "refresh_oidc_tokens_for_roles", fake_refresh)
+
+        client = _FakeClient([TokenExpiredError("job-1"), {"job_state": "FINISHED"}])
+        config = _config()
+        config["oidc"] = {"enabled": True}
+        config["tokens"] = {"fts_submit": "old-token"}
+
+        result = poll_to_completion([_subjob("job-1")], client, config)
+        assert result[0]["status"] == "FINISHED"
+        assert refresh_calls == [["fts_submit"]]
+        assert client.update_token_calls == ["new-token"]
+
+    def test_oidc_refresh_called_only_once_per_round_with_multiple_jobs(
+            self, monkeypatch):
+        """When two jobs both get 401 in the same round, refresh fires only once."""
+        import fts_framework.fts.poller as mod
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+
+        refresh_calls = []
+
+        def fake_refresh(cfg, roles):
+            refresh_calls.append(roles)
+            cfg.setdefault("tokens", {})["fts_submit"] = "new-token"
+
+        monkeypatch.setattr(mod._config_loader,
+                            "refresh_oidc_tokens_for_roles", fake_refresh)
+
+        client = _FakeClient([
+            TokenExpiredError("job-1"),  # round 1, job-1
+            TokenExpiredError("job-2"),  # round 1, job-2
+            {"job_state": "FINISHED"},   # round 2, job-1
+            {"job_state": "FINISHED"},   # round 2, job-2
+        ])
+        config = _config()
+        config["oidc"] = {"enabled": True}
+        config["tokens"] = {"fts_submit": "old-token"}
+
+        result = poll_to_completion(
+            [_subjob("job-1"), _subjob("job-2")], client, config
+        )
+        assert all(r["status"] == "FINISHED" for r in result)
+        assert len(refresh_calls) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -355,13 +447,65 @@ class TestBackoff:
         assert result[0]["status"] == "FINISHED"
         assert len(client.get_calls) == 2
 
-    def test_http_error_propagates(self, monkeypatch):
-        """Permanent HTTP errors (non-transient, no response) must propagate."""
+    def test_single_non_transient_http_error_swallowed(self, monkeypatch):
+        """A single non-transient HTTP error must not immediately fail the job."""
         import fts_framework.fts.poller as mod
         monkeypatch.setattr(mod.time, "sleep", lambda s: None)
-        client = _FakeClient([requests.HTTPError("403 Forbidden")])
-        with pytest.raises(requests.HTTPError):
-            poll_to_completion([_subjob("job-1")], client, _config())
+        client = _FakeClient([
+            requests.HTTPError("500 Server Error"),
+            {"job_state": "FINISHED"},
+        ])
+        result = poll_to_completion([_subjob("job-1")], client, _config())
+        assert result[0]["status"] == "FINISHED"
+
+    def test_non_transient_http_error_marks_poll_failed_at_threshold(self, monkeypatch):
+        """After poll_error_max_consecutive non-transient errors the job is POLL_FAILED."""
+        import fts_framework.fts.poller as mod
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+        # max=2: two consecutive errors → POLL_FAILED (no raise)
+        client = _FakeClient([
+            requests.HTTPError("500"),
+            requests.HTTPError("500"),
+        ])
+        result = poll_to_completion([_subjob("job-1")], client,
+                                    _config(poll_error_max_consecutive=2))
+        assert result[0]["status"] == "POLL_FAILED"
+        assert result[0]["terminal"] is True
+
+    def test_non_transient_error_count_resets_on_success(self, monkeypatch):
+        """A successful poll resets the per-job non-transient error counter."""
+        import fts_framework.fts.poller as mod
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+        # error → success (counter resets) → error → success: never hits threshold
+        client = _FakeClient([
+            requests.HTTPError("500"),
+            {"job_state": "ACTIVE"},
+            requests.HTTPError("500"),
+            {"job_state": "FINISHED"},
+        ])
+        result = poll_to_completion([_subjob("job-1")], client,
+                                    _config(poll_error_max_consecutive=2))
+        assert result[0]["status"] == "FINISHED"
+
+    def test_poll_failed_job_does_not_block_other_jobs(self, monkeypatch):
+        """When one job hits the error threshold other jobs continue polling."""
+        import fts_framework.fts.poller as mod
+        monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+        # job-1 gets two consecutive errors (max=2) → POLL_FAILED
+        # job-2 finishes normally
+        client = _FakeClient([
+            requests.HTTPError("500"),   # round 1, job-1
+            {"job_state": "ACTIVE"},     # round 1, job-2
+            requests.HTTPError("500"),   # round 2, job-1 → POLL_FAILED
+            {"job_state": "FINISHED"},   # round 2, job-2
+        ])
+        result = poll_to_completion(
+            [_subjob("job-1"), _subjob("job-2")], client,
+            _config(poll_error_max_consecutive=2),
+        )
+        statuses = {r["job_id"]: r["status"] for r in result}
+        assert statuses["job-1"] == "POLL_FAILED"
+        assert statuses["job-2"] == "FINISHED"
 
     def test_transient_http_error_retried(self, monkeypatch):
         """HTTPError with a transient status (502/503/504) must be swallowed and retried."""

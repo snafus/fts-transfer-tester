@@ -106,6 +106,7 @@ _DEFAULTS = {
         "max_interval_s": 300,
         "campaign_timeout_s": 86400,
         "stuck_active_check_rounds": 10,
+        "poll_error_max_consecutive": 3,
     },
     "cleanup": {
         "before": False,
@@ -776,6 +777,11 @@ def _validate_polling(config):
         polling["stuck_active_check_rounds"],
         "polling.stuck_active_check_rounds",
         min_val=0,
+    )
+    _require_int(
+        polling["poll_error_max_consecutive"],
+        "polling.poll_error_max_consecutive",
+        min_val=1,
     )
 
 
