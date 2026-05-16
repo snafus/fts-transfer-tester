@@ -275,6 +275,19 @@ class TestBuildPayload:
         payload = build_payload(mapping, {}, _config(nostreams=None), RUN_ID, 0, 0)
         assert "nostreams" not in payload["params"]
 
+    def test_nostreams_string_none_ignored(self):
+        """YAML 'None' (capital N) is parsed as the string 'None' by PyYAML,
+        not as null.  It must not crash build_payload."""
+        mapping = self._make_chunk(["https://src.example.org/f.dat"])
+        payload = build_payload(mapping, {}, _config(nostreams="None"), RUN_ID, 0, 0)
+        assert "nostreams" not in payload["params"]
+
+    def test_nostreams_string_digit_ignored(self):
+        """A string like '4' must not be coerced — require an actual int."""
+        mapping = self._make_chunk(["https://src.example.org/f.dat"])
+        payload = build_payload(mapping, {}, _config(nostreams="4"), RUN_ID, 0, 0)
+        assert "nostreams" not in payload["params"]
+
     def test_retry_count_from_config(self):
         mapping = self._make_chunk(["https://src.example.org/f.dat"])
         payload = build_payload(mapping, {}, _config(fts_retry_max=4), RUN_ID, 0, 0)

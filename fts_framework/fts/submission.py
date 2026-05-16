@@ -153,7 +153,13 @@ def build_payload(chunk_mapping, checksums, config, run_id, chunk_index, retry_r
     # Optional parallel-streams hint (protocol-dependent; omitted when None)
     nostreams = transfer_cfg.get("nostreams")
     if nostreams is not None:
-        payload["params"]["nostreams"] = int(nostreams)
+        if isinstance(nostreams, int) and not isinstance(nostreams, bool):
+            payload["params"]["nostreams"] = nostreams
+        else:
+            logger.warning(
+                "transfer.nostreams must be an integer; ignoring value %r",
+                nostreams,
+            )
 
     if transfer_cfg.get("unmanaged_tokens", False):
         # NOT YET IMPLEMENTED: unmanaged_tokens mode (FTS3 lifecycle opt-out).
