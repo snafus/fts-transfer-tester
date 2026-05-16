@@ -93,6 +93,7 @@ _DEFAULTS = {
         "unmanaged_tokens": False,
         "source_prefix": None,
         "destinations": None,
+        "nostreams": None,
     },
     "concurrency": {
         "want_digest_workers": 8,
@@ -730,6 +731,10 @@ def _validate_transfer(config):
                     source_prefix
                 )
             )
+
+    nostreams = config["transfer"]["nostreams"]
+    if nostreams is not None:
+        _require_int(nostreams, "transfer.nostreams", min_val=1)
 
 def _validate_concurrency(config):
     # type: (dict) -> None
