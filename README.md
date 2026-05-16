@@ -220,6 +220,7 @@ The `tokens` YAML section may be omitted entirely if all three roles are satisfi
 | `priority` | int | `3` | FTS3 job priority 1 (lowest) to 5 (highest) |
 | `activity` | string | `"default"` | FTS3 activity share label |
 | `unmanaged_tokens` | bool | `false` | (Not yet implemented — reserved for future FTS3 unmanaged-token mode.) |
+| `nostreams` | int \| null | `null` | Number of parallel TCP/HTTP streams per file transfer. When `null` (or omitted) the parameter is not sent and the FTS3 optimizer decides. Protocol-dependent: silently ignored by endpoints that do not support it. Must be a whole-number integer ≥ 1 in YAML (use `null` or omit the key to let FTS3 decide — note that `None` with a capital N is a YAML string, not null). |
 | `job_metadata` | dict | `{}` | User-supplied key/value pairs merged into `job_metadata`. Framework keys (`run_id`, `chunk_index`, `retry_round`, `test_label`) always take priority. |
 
 ### `concurrency`
@@ -243,6 +244,7 @@ The `tokens` YAML section may be omitted entirely if all three roles are satisfi
 | `max_interval_s` | int | `300` | Maximum polling interval (cap on backoff) |
 | `campaign_timeout_s` | int | `86400` | Raise `PollingTimeoutError` if jobs are still active after this many seconds |
 | `stuck_active_check_rounds` | int | `10` | Every N consecutive non-terminal poll rounds, fetch `GET /jobs/{id}/files` and derive the effective job state from file-level outcomes. Catches jobs stuck in `ACTIVE` whose job-level state never updates. Set to `0` to disable. |
+| `poll_error_max_consecutive` | int | `3` | Number of consecutive failing poll rounds tolerated before giving up. Applies to two independent counters: (1) per-round HTTP 401/403 (token auth failures) — an OIDC token refresh is attempted once per failing round if `oidc.enabled: true`; (2) per-job non-transient HTTP errors (any 4xx/5xx outside the 429/502/503/504 transient set) — after this many consecutive errors the individual job is marked `POLL_FAILED` (terminal) and removed from the active set without aborting the campaign. Minimum 1. |
 
 ### `cleanup`
 
@@ -981,7 +983,7 @@ Integration tests require a live FTS3 endpoint:
 FTS_INTEGRATION_ENDPOINT=https://fts.example.org:8446 pytest tests/integration/ -v
 ```
 
-**940 unit tests** cover all modules: config loader (including OIDC resolution and scope templates), auth env loader, OIDC token fetch, inventory, destination planner (single and weighted multi-destination), checksum fetcher, FTS client, submission (including 500-recovery and per-file token forwarding), poller, collector, persistence, resume controller, metrics engine, cleanup manager, reporting renderer, runner orchestration, and sequence runner (loader, state, reporter, per-trial OIDC refresh).
+**952 unit tests** cover all modules: config loader (including OIDC resolution and scope templates), auth env loader, OIDC token fetch, inventory, destination planner (single and weighted multi-destination), checksum fetcher, FTS client, submission (including 500-recovery and per-file token forwarding), poller, collector, persistence, resume controller, metrics engine, cleanup manager, reporting renderer, runner orchestration, and sequence runner (loader, state, reporter, per-trial OIDC refresh).
 
 ---
 
@@ -1048,7 +1050,7 @@ FTSFrameworkError
 ├── ChecksumFetchError
 ├── SubmissionError
 ├── PollingTimeoutError
-├── TokenExpiredError          Always propagates; never swallowed
+├── TokenExpiredError          Raised after poll_error_max_consecutive consecutive 401/403 rounds; OIDC refresh attempted per round if configured
 ├── PersistenceError
 ├── CleanupError
 └── ResumeError
