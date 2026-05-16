@@ -69,7 +69,8 @@ def _mapping(*keys):
 
 def _config(chunk_size=200, scan_window_s=300, fts_retry_max=2,
             priority=3, activity=None, job_metadata=None,
-            verify_checksum="both", overwrite=False, unmanaged_tokens=False):
+            verify_checksum="both", overwrite=False, unmanaged_tokens=False,
+            nostreams=None):
     return {
         "run": {"test_label": "campaign_test"},
         "fts": {
@@ -89,6 +90,7 @@ def _config(chunk_size=200, scan_window_s=300, fts_retry_max=2,
             "activity": activity,
             "job_metadata": job_metadata or {},
             "unmanaged_tokens": unmanaged_tokens,
+            "nostreams": nostreams,
         },
         "submission": {
             "scan_window_s": scan_window_s,
@@ -262,6 +264,16 @@ class TestBuildPayload:
         mapping = self._make_chunk(["https://src.example.org/f.dat"])
         payload = build_payload(mapping, {}, _config(overwrite=False), RUN_ID, 0, 0)
         assert "overwrite" not in payload["params"]
+
+    def test_nostreams_included_when_set(self):
+        mapping = self._make_chunk(["https://src.example.org/f.dat"])
+        payload = build_payload(mapping, {}, _config(nostreams=4), RUN_ID, 0, 0)
+        assert payload["params"]["nostreams"] == 4
+
+    def test_nostreams_absent_when_not_set(self):
+        mapping = self._make_chunk(["https://src.example.org/f.dat"])
+        payload = build_payload(mapping, {}, _config(nostreams=None), RUN_ID, 0, 0)
+        assert "nostreams" not in payload["params"]
 
     def test_retry_count_from_config(self):
         mapping = self._make_chunk(["https://src.example.org/f.dat"])
