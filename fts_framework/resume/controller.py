@@ -162,14 +162,16 @@ def _recover_or_submit(fts_client, config, run_id, chunk_index, retry_round,
     Scans FTS3 first to avoid duplicate submissions, then POSTs the payload
     if no pre-existing job is found.
 
-    If ``transfer.destination_naming`` is ``"uuid"``, the fallback POST never
-    reuses the original destinations verbatim: every file's destination is
-    reminted (see ``destination.planner.remint``) and the mutated payload is
-    persisted as a new attempt file before being sent. This ensures that if
-    the original job is in fact still live (a false-negative pre-scan), the
-    duplicate job created here writes to a different path rather than
-    colliding with it. Default (``"sequential"``) mode is unaffected — the
-    original payload is loaded and POSTed verbatim, exactly as before.
+    If ``transfer.destination_naming`` is one of
+    ``destination.planner.REMINT_ON_RESUBMIT_MODES`` (currently ``"uuid"``
+    or ``"date"``), the fallback POST never reuses the original destinations
+    verbatim: every file's destination is reminted (see
+    ``destination.planner.remint``) and the mutated payload is persisted as
+    a new attempt file before being sent. This ensures that if the original
+    job is in fact still live (a false-negative pre-scan), the duplicate job
+    created here writes to a different path rather than colliding with it.
+    Default (``"sequential"``) mode is unaffected — the original payload is
+    loaded and POSTed verbatim, exactly as before.
 
     Args:
         fts_client: ``FTSClient`` instance.
@@ -212,16 +214,16 @@ def _recover_or_submit(fts_client, config, run_id, chunk_index, retry_round,
         )
 
     destination_naming = config.get("transfer", {}).get("destination_naming", "sequential")
-    if destination_naming == "uuid":
+    if destination_naming in dest_planner.REMINT_ON_RESUBMIT_MODES:
         payload = _remint_payload(payload)
         rel_path = store.write_payload(
             run_id, chunk_index, retry_round, payload,
             runs_dir=runs_dir, attempt_suffix=uuid.uuid4().hex[:8],
         )
         logger.warning(
-            "destination_naming=uuid: reminted destinations for chunk=%d "
+            "destination_naming=%s: reminted destinations for chunk=%d "
             "retry_round=%d before resubmission — new payload=%s",
-            chunk_index, retry_round, rel_path,
+            destination_naming, chunk_index, retry_round, rel_path,
         )
 
     resp = fts_client.post("/jobs", payload)
@@ -266,7 +268,8 @@ def _remint_payload(payload):
     # type: (dict) -> dict
     """Return a deep copy of *payload* with every file's destination reminted.
 
-    Only called when ``destination_naming == "uuid"`` and a genuine
+    Only called when ``destination_naming`` is a
+    ``destination.planner.REMINT_ON_RESUBMIT_MODES`` mode and a genuine
     resubmission is about to happen (pre-scan found no existing job) — this
     guarantees a duplicate live job, if one exists, never targets the same
     destination path as the original attempt.

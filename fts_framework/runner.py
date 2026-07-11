@@ -446,7 +446,7 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
             retry_round, len(failed), len(submission_failed_pfns),
         )
 
-        if destination_naming == "uuid":
+        if destination_naming in dest_planner.REMINT_ON_RESUBMIT_MODES:
             # Match FAILED/CANCELED file records on the exact (source, dest)
             # pair FTS3 actually used, not just the source PFN — planner.plan()
             # allows duplicate source PFNs (sampling padding), each with its

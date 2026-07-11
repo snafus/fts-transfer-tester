@@ -1135,6 +1135,42 @@ class TestRunCampaign:
         assert round1_dst != original_dst  # round-1 retry reminted
         assert round2_dst != round1_dst    # round-2 retry reminted again, from latest
 
+    def test_date_mode_retry_destinations_reminted(self, tmp_path, monkeypatch):
+        """date mode enables the same reminting behavior as uuid mode."""
+        import fts_framework.runner as runner_mod
+        import fts_framework.fts.collector as collector_mod
+
+        _install_run_campaign_mocks(monkeypatch, tmp_path)
+
+        captured = []
+        mocked_submit = runner_mod._submit_chunks
+
+        def tracking_submit(mapping, checksums, config, run_id, retry_round, client, runs_dir):
+            captured.append((retry_round, list(mapping)))
+            return mocked_submit(mapping, checksums, config, run_id, retry_round, client, runs_dir)
+        monkeypatch.setattr(runner_mod, "_submit_chunks", tracking_submit)
+
+        harvest_calls = [0]
+        def fake_harvest(subjobs, client, run_id=None, runs_dir=None):
+            harvest_calls[0] += 1
+            dest = captured[-1][1][0][1] if captured else "https://dst/f1"
+            if harvest_calls[0] == 1:
+                return ([{"source_surl": "https://src/f1", "file_state": "FAILED",
+                          "dest_surl": dest}], [], [])
+            return ([{"source_surl": "https://src/f1", "file_state": "FINISHED",
+                      "dest_surl": dest}], [], [])
+        monkeypatch.setattr(collector_mod, "harvest_all", fake_harvest)
+
+        config = dict(_base_config())
+        config["retry"] = {"framework_retry_max": 1}
+        config["transfer"] = dict(config["transfer"], destination_naming="date")
+        from fts_framework.runner import run_campaign
+        run_campaign(config, runs_dir=str(tmp_path))
+
+        round0_dst = dict(captured[0][1])["https://src/f1"]
+        round1_dst = dict(captured[1][1])["https://src/f1"]
+        assert round1_dst != round0_dst
+
     def test_uuid_mode_duplicate_source_pfn_only_failed_occurrence_reminted(
         self, tmp_path, monkeypatch,
     ):

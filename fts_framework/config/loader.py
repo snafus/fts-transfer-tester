@@ -64,7 +64,7 @@ _ENV_TOKEN_ROLES = {
 
 _ALLOWED_CHECKSUM_ALGORITHMS = ("adler32",)
 _ALLOWED_VERIFY_CHECKSUM = ("both", "source", "target", "none")
-_ALLOWED_DESTINATION_NAMING = ("sequential", "uuid")
+_ALLOWED_DESTINATION_NAMING = ("sequential", "uuid", "date")
 
 # ---------------------------------------------------------------------------
 # Defaults for optional fields only.

@@ -118,8 +118,9 @@ only calls `store.update_manifest()` once per submission round (not per
 chunk), and the resume-time pre-scan (`resume/controller.py::_scan_for_job`)
 uses a coarse window (≥1h, single attempt). If a crash-resume happens outside
 that window, a duplicate job can be created targeting the *same* destination
-as a still-live original — two transfer agents writing the same path. The
-opt-in `transfer.destination_naming: uuid` mode closes this specific
+as a still-live original — two transfer agents writing the same path. Setting
+`transfer.destination_naming` to `uuid` or `date` (see
+`destination.planner.REMINT_ON_RESUBMIT_MODES`) closes this specific
 collision: every real resubmission attempt (resume fallback repost,
 framework retry round) mints a **fresh** destination via
 `destination.planner.remint()` rather than reusing the original, so a
@@ -136,7 +137,7 @@ there are 100% deterministic, so this is opt-in, not automatic. See
 | Checksum algorithm | ADLER32 only |
 | Checksum source | WebDAV `Want-Digest: adler32` HEAD request pre-submission |
 | Want-Digest format | Expect hex; detect base64 and convert; hard fail if neither parses |
-| Destination pattern | `{dst_prefix}/{test_label}/testfile_{N:06d}[.ext]` (default); opt-in `transfer.destination_naming: uuid` uses `testfile_{uuid4().hex}[.ext]` instead, and mints a **fresh** destination on every genuine resubmission attempt (resume fallback repost, framework retry) — see `destination.planner.remint()` |
+| Destination pattern | `{dst_prefix}/{test_label}/testfile_{N:06d}[.ext]` (default, `destination_naming: sequential`). Opt-in `destination_naming: uuid` uses `testfile_{uuid4().hex}[.ext]`; opt-in `destination_naming: date` uses `testfile_{YYYYMMDD_HHMMSS}_{N:06d}[.ext]` (one timestamp per campaign, shared across all files, index for uniqueness). Both opt-in modes mint a **fresh** destination on every genuine resubmission attempt (resume fallback repost, framework retry) — see `destination.planner.remint()` and `REMINT_ON_RESUBMIT_MODES` |
 | File extension | Optional; default off (`preserve_extension: false`) |
 | Throughput primary source | `file.throughput` (agent-reported); fallback to `filesize/tx_duration` |
 | Concurrency model | Observe only; derive from file timestamps; never touch FTS3 link config API |

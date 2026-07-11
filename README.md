@@ -37,7 +37,7 @@ Production-grade, automation-first FTS3 transfer benchmarking framework written 
 - **REST-native** — all FTS3 interaction via the REST API; no `fts-rest-cli`, no `davix`, no subprocess
 - **File-level metrics are authoritative** — all metrics derive from `GET /jobs/{id}/files`; job-level state is used only for polling
 - **Raw-data-first** — every REST response written to disk before processing; reports can always be regenerated from persisted data without re-contacting FTS3
-- **Deterministic destination mapping** — source PFNs sorted and mapped to `{dst_prefix}/{test_label}/testfile_{N:06d}` at campaign start; mapping persisted in the run manifest. Opt-in `transfer.destination_naming: uuid` mode mints a fresh destination on every resubmission attempt, closing a duplicate-live-job write race on resume (see [Destination Naming and Resubmission Safety](#destination-naming-and-resubmission-safety))
+- **Deterministic destination mapping** — source PFNs sorted and mapped to `{dst_prefix}/{test_label}/testfile_{N:06d}` at campaign start; mapping persisted in the run manifest. Opt-in `transfer.destination_naming: uuid` or `date` modes mint a fresh destination on every resubmission attempt, closing a duplicate-live-job write race on resume (see [Destination Naming and Resubmission Safety](#destination-naming-and-resubmission-safety))
 - **Campaign resumption** — interrupted runs are detected by `run_id` in FTS3 `job_metadata`; the poller re-attaches to in-flight jobs
 - **500-recovery on submission** — a POST returning HTTP 500 does not mean the job was not created; the framework scans FTS3 before resubmitting
 - **Framework-level retry** — failed/canceled files can be resubmitted in configurable retry rounds (default off)
@@ -213,7 +213,7 @@ The `tokens` YAML section may be omitted entirely if all three roles are satisfi
 | `source_prefix` | string \| null | `null` | Source storage base URL. Used only for OIDC scope template expansion (`{src_prefix_path}`). Not sent to FTS3. |
 | `destinations` | list | `null` | Weighted multi-destination list (see [Multi-Destination Transfers](#multi-destination-transfers)). Mutually exclusive with `dst_prefix`. |
 | `preserve_extension` | bool | `false` | If true, append original file extension to destination filename |
-| `destination_naming` | string | `"sequential"` | `"sequential"` uses `testfile_{N:06d}`. `"uuid"` uses `testfile_{uuid4().hex}` and additionally mints a fresh destination on every real resubmission attempt (resume fallback repost, framework retry round), so a duplicate live job created by a resume race can never write to the same destination as a still-in-flight original. See [Destination Naming and Resubmission Safety](#destination-naming-and-resubmission-safety). |
+| `destination_naming` | string | `"sequential"` | `"sequential"` uses `testfile_{N:06d}`. `"uuid"` uses `testfile_{uuid4().hex}`. `"date"` uses `testfile_{YYYYMMDD_HHMMSS}_{N:06d}` (one timestamp per campaign, index for uniqueness). `"uuid"` and `"date"` additionally mint a fresh destination on every real resubmission attempt (resume fallback repost, framework retry round), so a duplicate live job created by a resume race can never write to the same destination as a still-in-flight original. See [Destination Naming and Resubmission Safety](#destination-naming-and-resubmission-safety). |
 | `checksum_algorithm` | string | `"adler32"` | Only ADLER32 is supported |
 | `verify_checksum` | string | `"both"` | FTS3 checksum mode: `both`, `source`, `target`, `none`. Modes `none` and `target` skip the pre-submission Want-Digest fetch. |
 | `overwrite` | bool | `false` | Allow FTS3 to overwrite existing destination files |
@@ -836,25 +836,25 @@ The resume controller:
 
 **Note**: checksums are not persisted between runs. On resume, retry submissions omit checksum fields and FTS3 skips end-to-end checksum verification for those files.
 
-**Duplicate-job race on resume**: the pre-resubmission scan for a missing chunk uses a coarse (≥1 hour) time window and a single attempt. If resume happens outside that window, the scan can miss a still-live original job and create a genuine duplicate FTS3 job for the same chunk. With the default `transfer.destination_naming: sequential`, that duplicate targets the *identical* destination URL as the original — two transfer agents writing the same path. Set `transfer.destination_naming: uuid` (see [Destination Naming and Resubmission Safety](#destination-naming-and-resubmission-safety)) to eliminate this collision.
+**Duplicate-job race on resume**: the pre-resubmission scan for a missing chunk uses a coarse (≥1 hour) time window and a single attempt. If resume happens outside that window, the scan can miss a still-live original job and create a genuine duplicate FTS3 job for the same chunk. With the default `transfer.destination_naming: sequential`, that duplicate targets the *identical* destination URL as the original — two transfer agents writing the same path. Set `transfer.destination_naming: uuid` or `date` (see [Destination Naming and Resubmission Safety](#destination-naming-and-resubmission-safety)) to eliminate this collision.
 
 ---
 
 ## Destination Naming and Resubmission Safety
 
-By default (`transfer.destination_naming: sequential`), destination filenames are `testfile_{N:06d}`, deterministic from the sorted PFN index. Setting:
+By default (`transfer.destination_naming: sequential`), destination filenames are `testfile_{N:06d}`, deterministic from the sorted PFN index. Two opt-in alternatives are available:
 
 ```yaml
 transfer:
-  destination_naming: uuid
+  destination_naming: uuid    # or: date
 ```
 
-changes two things:
+- `uuid` — destination filenames become `testfile_{uuid4().hex}` (a random hex token) instead of a sequential index.
+- `date` — destination filenames become `testfile_{YYYYMMDD_HHMMSS}_{N:06d}`: one timestamp captured when the campaign is planned (shared by every file, so a directory listing sorts by campaign date) followed by the sequential index (for uniqueness — the timestamp alone isn't precise enough for large file counts planned within the same second).
 
-1. Destination filenames become `testfile_{uuid4().hex}` instead of a sequential index.
-2. Every genuine resubmission attempt — a resume fallback repost (see [Campaign Resumption](#campaign-resumption)) or a framework retry round (see [Framework Retry](#framework-retry)) — mints a **fresh** destination rather than reusing the one already used, instead of writing to the same path as a possibly still-in-flight prior attempt.
+Both opt-in modes change a second thing too: every genuine resubmission attempt — a resume fallback repost (see [Campaign Resumption](#campaign-resumption)) or a framework retry round (see [Framework Retry](#framework-retry)) — mints a **fresh** destination (always a `testfile_{uuid4().hex}` basename, regardless of which mode planned the original) rather than reusing the one already used, instead of writing to the same path as a possibly still-in-flight prior attempt.
 
-This closes a specific race: the framework's 500-recovery and crash-resume scans are best-effort, not guaranteed, and can occasionally create a genuine duplicate live FTS3 job for the same file. With sequential naming that duplicate targets the exact same destination path as the original — a real write collision. With uuid naming the duplicate targets a different path, so a wasted duplicate transfer can still happen but the destructive write race cannot.
+This closes a specific race: the framework's 500-recovery and crash-resume scans are best-effort, not guaranteed, and can occasionally create a genuine duplicate live FTS3 job for the same file. With sequential naming that duplicate targets the exact same destination path as the original — a real write collision. With `uuid` or `date` naming the duplicate targets a different path, so a wasted duplicate transfer can still happen but the destructive write race cannot.
 
 `manifest.json`'s `destination_mapping` always reflects the initial plan only — it is not updated when a resubmission mints a new destination. The destination actually used for a reminted attempt is recorded in the corresponding file under `submitted_payloads/` (the exact POST body sent to FTS3), which is authoritative for that attempt.
 
@@ -881,7 +881,7 @@ Each retry round:
 
 The retry loop stops early if a round produces no failures.
 
-With `transfer.destination_naming: uuid`, each retry round also mints a fresh destination for the resubmitted files rather than reusing the original — see [Destination Naming and Resubmission Safety](#destination-naming-and-resubmission-safety).
+With `transfer.destination_naming: uuid` or `date`, each retry round also mints a fresh destination for the resubmitted files rather than reusing the original — see [Destination Naming and Resubmission Safety](#destination-naming-and-resubmission-safety).
 
 ---
 

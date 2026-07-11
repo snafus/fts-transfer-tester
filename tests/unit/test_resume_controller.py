@@ -364,6 +364,39 @@ class TestLoadUuidResubmission:
 
 
 # ---------------------------------------------------------------------------
+# load — date destination_naming: also enables reminting on resubmission
+# ---------------------------------------------------------------------------
+
+class TestLoadDateResubmission:
+    def test_reminted_payload_differs_from_original(self, tmp_path):
+        _setup_run(tmp_path, "r1")
+        original_path = _write_prod_payload(tmp_path, "r1", chunk_index=0, retry_round=0)
+        with open(original_path) as fh:
+            original_payload = json.load(fh)
+
+        client = _FakeClient([[], _FakeResponse(200, {"job_id": "job-new"})])
+        load("r1", client, _config(destination_naming="date"), runs_dir=str(tmp_path))
+
+        posted = client.post_payloads[0]
+        original_dests = [f["destinations"][0] for f in original_payload["files"]]
+        posted_dests = [f["destinations"][0] for f in posted["files"]]
+        assert posted_dests != original_dests
+
+    def test_new_attempt_payload_file_written(self, tmp_path):
+        _setup_run(tmp_path, "r1")
+        _write_prod_payload(tmp_path, "r1", chunk_index=0, retry_round=0)
+        payload_dir = os.path.join(str(tmp_path), "r1", "submitted_payloads")
+
+        client = _FakeClient([[], _FakeResponse(200, {"job_id": "job-new"})])
+        load("r1", client, _config(destination_naming="date"), runs_dir=str(tmp_path))
+
+        filenames = os.listdir(payload_dir)
+        assert "chunk_0000_r0.json" in filenames
+        attempt_files = [f for f in filenames if f.startswith("chunk_0000_r0_a")]
+        assert len(attempt_files) == 1
+
+
+# ---------------------------------------------------------------------------
 # load — 500 recovery on resubmission
 # ---------------------------------------------------------------------------
 

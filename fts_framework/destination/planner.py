@@ -11,12 +11,20 @@ where *N* is the zero-based index of the PFN in the alphabetically sorted
 inventory.  The sort guarantees the same mapping is produced on every run from
 the same input set, regardless of the order PFNs appear in the inventory file.
 
-If ``transfer.destination_naming`` is ``"uuid"`` (default: ``"sequential"``),
-the basename is a random hex token instead of the zero-padded index. This is
-an opt-in, per-attempt-safety naming mode: see :func:`remint`, which mints a
-fresh destination for genuine resubmission attempts (framework retry, resume
-fallback repost) so a duplicate live job can never write to the same path as
-a still-in-flight or already-accepted prior attempt.
+``transfer.destination_naming`` (default: ``"sequential"``) may also be set to:
+
+- ``"uuid"`` — the basename is a random hex token instead of the zero-padded
+  index.
+- ``"date"`` — the basename is a ``YYYYMMDD_HHMMSS`` timestamp (captured once
+  per ``plan()`` call, shared by every file in the campaign) followed by the
+  zero-padded index for uniqueness within that campaign, e.g.
+  ``testfile_20260711_143205_000042``.
+
+Both are opt-in, per-attempt-safety naming modes: see :func:`remint`, which
+mints a fresh destination for genuine resubmission attempts (framework
+retry, resume fallback repost) so a duplicate live job can never write to
+the same path as a still-in-flight or already-accepted prior attempt.
+``REMINT_ON_RESUBMIT_MODES`` lists which naming modes enable this.
 
 The mapping is an ``OrderedDict`` keyed by source PFN, preserving the sorted
 iteration order.  It must be persisted to the run manifest before any network
@@ -35,10 +43,17 @@ Usage::
 import logging
 import os
 import uuid
+from datetime import datetime
 
 from fts_framework.exceptions import ConfigError
 
 logger = logging.getLogger(__name__)
+
+# Naming modes that also enable per-attempt reminting on resubmission (see
+# remint() and its call sites in resume/controller.py and runner.py) —
+# opt-in "safety" modes, as opposed to "sequential" (fully deterministic,
+# behavior unchanged from before this feature existed).
+REMINT_ON_RESUBMIT_MODES = frozenset(["uuid", "date"])
 
 
 def plan(pfns, config):
@@ -82,13 +97,14 @@ def _plan_single_destination(pfns, config):
     test_label   = config["run"]["test_label"]
     preserve_ext = config["transfer"]["preserve_extension"]
     naming       = config["transfer"].get("destination_naming", "sequential")
+    date_prefix  = _date_prefix() if naming == "date" else None
 
     sorted_pfns = sorted(pfns)
     mapping = []
     for idx, pfn in enumerate(sorted_pfns):
         ext  = _extract_extension(pfn) if preserve_ext else ""
         dest = "{}/{}/testfile_{}{}".format(
-            dst_prefix, test_label, _basename_token(idx, naming), ext,
+            dst_prefix, test_label, _basename_token(idx, naming, date_prefix), ext,
         )
         mapping.append((pfn, dest))
 
@@ -117,6 +133,7 @@ def _plan_multi_destination(pfns, destinations, config):
     test_label   = config["run"]["test_label"]
     preserve_ext = config["transfer"]["preserve_extension"]
     naming       = config["transfer"].get("destination_naming", "sequential")
+    date_prefix  = _date_prefix() if naming == "date" else None
 
     sorted_pfns = sorted(pfns)
     n           = len(sorted_pfns)
@@ -165,7 +182,7 @@ def _plan_multi_destination(pfns, destinations, config):
         prefix = destinations[dest_idx]["prefix"].rstrip("/")
         ext    = _extract_extension(pfn) if preserve_ext else ""
         mapping.append((pfn, "{}/{}/testfile_{}{}".format(
-            prefix, test_label, _basename_token(local_idx, naming), ext,
+            prefix, test_label, _basename_token(local_idx, naming, date_prefix), ext,
         )))
 
     return mapping
@@ -193,18 +210,34 @@ def remint(dest_url):
     return "{}/testfile_{}{}".format(directory, uuid.uuid4().hex, ext)
 
 
-def _basename_token(idx, naming):
-    # type: (int, str) -> str
+def _basename_token(idx, naming, date_prefix=None):
+    # type: (int, str, str) -> str
     """Return the ``testfile_`` basename token for index *idx*.
 
     ``"sequential"`` (default) returns the zero-padded index, preserving the
     original deterministic naming.  ``"uuid"`` returns a random hex token so
     that repeated resubmission attempts (see :func:`remint`) cannot collide
-    with a still-live job at the same destination.
+    with a still-live job at the same destination.  ``"date"`` returns
+    *date_prefix* (a single timestamp captured once per ``plan()`` call,
+    shared by every file in the campaign) followed by the zero-padded index,
+    so files are human-sortable by campaign date while still unique within
+    the campaign.
     """
     if naming == "uuid":
         return uuid.uuid4().hex
+    if naming == "date":
+        return "{}_{:06d}".format(date_prefix, idx)
     return "{:06d}".format(idx)
+
+
+def _date_prefix():
+    # type: () -> str
+    """Return the current UTC timestamp as ``YYYYMMDD_HHMMSS``.
+
+    Matches the timestamp format used by ``runner.generate_run_id()``, for
+    consistency across the framework.
+    """
+    return datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
 
 def _extract_extension(pfn):

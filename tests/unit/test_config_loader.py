@@ -622,6 +622,12 @@ class TestEnumValidation:
         write_yaml(data, path)
         assert load(path)["transfer"]["destination_naming"] == "uuid"
 
+    def test_destination_naming_date_accepted(self, tmp_path):
+        path, data = _base(tmp_path)
+        data["transfer"]["destination_naming"] = "date"
+        write_yaml(data, path)
+        assert load(path)["transfer"]["destination_naming"] == "date"
+
     def test_invalid_destination_naming_raises(self, tmp_path):
         path, data = _base(tmp_path)
         data["transfer"]["destination_naming"] = "random"

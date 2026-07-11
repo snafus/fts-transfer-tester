@@ -271,6 +271,66 @@ class TestUuidNaming:
 
 
 # ---------------------------------------------------------------------------
+# plan — date destination_naming mode
+# ---------------------------------------------------------------------------
+
+class TestDateNaming:
+    def test_date_mode_not_purely_sequential(self):
+        pfns = ["https://src.example.org/f{:02d}.dat".format(i) for i in range(3)]
+        mapping = plan(pfns, _config(destination_naming="date"))
+        dsts = _dsts(mapping)
+        assert not any(d.endswith("testfile_000000") for d in dsts)
+        assert not any(d.endswith("testfile_000001") for d in dsts)
+
+    def test_date_mode_basenames_are_unique(self):
+        pfns = ["https://src.example.org/f{:02d}.dat".format(i) for i in range(20)]
+        mapping = plan(pfns, _config(destination_naming="date"))
+        assert len(set(_dsts(mapping))) == 20
+
+    def test_date_mode_shares_one_prefix_across_the_campaign(self):
+        """All files from a single plan() call share the same timestamp
+        prefix; only the trailing index differs."""
+        pfns = ["https://src.example.org/f{:02d}.dat".format(i) for i in range(5)]
+        mapping = plan(pfns, _config(destination_naming="date"))
+        prefixes = set()
+        for dst in _dsts(mapping):
+            basename = dst.rsplit("/", 1)[-1]
+            # testfile_{date_prefix}_{idx:06d} -> strip the trailing _NNNNNN
+            date_prefix = basename[len("testfile_"):-len("_000000")]
+            prefixes.add(date_prefix)
+        assert len(prefixes) == 1
+
+    def test_date_mode_preserves_directory(self):
+        pfns = ["https://src.example.org/file.dat"]
+        mapping = plan(pfns, _config(
+            dst_prefix="https://storage.example.org/data",
+            test_label="my_run",
+            destination_naming="date",
+        ))
+        dest = _dsts(mapping)[0]
+        assert dest.startswith("https://storage.example.org/data/my_run/testfile_")
+
+    def test_date_mode_respects_preserve_extension(self):
+        pfns = ["https://src.example.org/file.dat"]
+        mapping = plan(pfns, _config(destination_naming="date", preserve_extension=True))
+        assert _dsts(mapping)[0].endswith(".dat")
+
+    def test_date_mode_basename_format(self):
+        import re
+        pfns = ["https://src.example.org/file.dat"]
+        mapping = plan(pfns, _config(destination_naming="date"))
+        basename = _dsts(mapping)[0].rsplit("/", 1)[-1]
+        assert re.match(r"^testfile_\d{8}_\d{6}_\d{6}$", basename)
+
+    def test_date_mode_multi_destination(self):
+        pfns = ["https://src.example.org/f{:03d}".format(i) for i in range(10)]
+        mapping = plan(pfns, _multi_config(_dest_specs(1, 1), destination_naming="date"))
+        dsts = _dsts(mapping)
+        assert len(set(dsts)) == 10
+        assert not any(d.endswith("testfile_000000") for d in dsts)
+
+
+# ---------------------------------------------------------------------------
 # remint — fresh destination for resubmission attempts
 # ---------------------------------------------------------------------------
 
