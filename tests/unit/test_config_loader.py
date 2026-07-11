@@ -611,6 +611,24 @@ class TestEnumValidation:
             write_yaml(data, path)
             assert load(path)["transfer"]["verify_checksum"] == mode
 
+    def test_destination_naming_defaults_to_sequential(self, tmp_path):
+        path, data = _base(tmp_path)
+        write_yaml(data, path)
+        assert load(path)["transfer"]["destination_naming"] == "sequential"
+
+    def test_destination_naming_uuid_accepted(self, tmp_path):
+        path, data = _base(tmp_path)
+        data["transfer"]["destination_naming"] = "uuid"
+        write_yaml(data, path)
+        assert load(path)["transfer"]["destination_naming"] == "uuid"
+
+    def test_invalid_destination_naming_raises(self, tmp_path):
+        path, data = _base(tmp_path)
+        data["transfer"]["destination_naming"] = "random"
+        write_yaml(data, path)
+        with pytest.raises(ConfigError, match="destination_naming"):
+            load(path)
+
 
 # ---------------------------------------------------------------------------
 # File-level errors

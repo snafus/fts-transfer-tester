@@ -35,13 +35,16 @@ Usage::
         subjobs = load(run_id, fts_client, config)
 """
 
+import copy
 import json
 import logging
 import os
 import re
 import time
+import uuid
 from datetime import datetime
 
+from fts_framework.destination import planner as dest_planner
 from fts_framework.exceptions import SubmissionError, TokenExpiredError
 from fts_framework.persistence import store
 
@@ -134,7 +137,7 @@ def load(run_id, fts_client, config, runs_dir=store._DEFAULT_RUNS_DIR):
             )
             subjob = _recover_or_submit(
                 fts_client, config, run_id, chunk_index, retry_round,
-                payload_path, rel_path,
+                payload_path, rel_path, runs_dir,
             )
             new_subjobs.append(subjob)
             existing[key] = subjob
@@ -152,12 +155,21 @@ def load(run_id, fts_client, config, runs_dir=store._DEFAULT_RUNS_DIR):
 # ---------------------------------------------------------------------------
 
 def _recover_or_submit(fts_client, config, run_id, chunk_index, retry_round,
-                       payload_path, rel_path):
-    # type: (object, dict, str, int, int, str, str) -> dict
+                       payload_path, rel_path, runs_dir=store._DEFAULT_RUNS_DIR):
+    # type: (object, dict, str, int, int, str, str, str) -> dict
     """Return a SubjobRecord for *chunk_index*/*retry_round*.
 
     Scans FTS3 first to avoid duplicate submissions, then POSTs the payload
     if no pre-existing job is found.
+
+    If ``transfer.destination_naming`` is ``"uuid"``, the fallback POST never
+    reuses the original destinations verbatim: every file's destination is
+    reminted (see ``destination.planner.remint``) and the mutated payload is
+    persisted as a new attempt file before being sent. This ensures that if
+    the original job is in fact still live (a false-negative pre-scan), the
+    duplicate job created here writes to a different path rather than
+    colliding with it. Default (``"sequential"``) mode is unaffected — the
+    original payload is loaded and POSTed verbatim, exactly as before.
 
     Args:
         fts_client: ``FTSClient`` instance.
@@ -167,6 +179,7 @@ def _recover_or_submit(fts_client, config, run_id, chunk_index, retry_round,
         retry_round (int): Retry round of the missing subjob.
         payload_path (str): Absolute path to the persisted payload JSON.
         rel_path (str): Relative path stored in ``SubjobRecord.payload_path``.
+        runs_dir (str): Base directory for run outputs.
 
     Returns:
         dict: New or recovered ``SubjobRecord``.
@@ -196,6 +209,19 @@ def _recover_or_submit(fts_client, config, run_id, chunk_index, retry_round,
         raise SubmissionError(
             chunk_index, 0,
             "Cannot load payload {!r}: {}".format(payload_path, exc),
+        )
+
+    destination_naming = config.get("transfer", {}).get("destination_naming", "sequential")
+    if destination_naming == "uuid":
+        payload = _remint_payload(payload)
+        rel_path = store.write_payload(
+            run_id, chunk_index, retry_round, payload,
+            runs_dir=runs_dir, attempt_suffix=uuid.uuid4().hex[:8],
+        )
+        logger.warning(
+            "destination_naming=uuid: reminted destinations for chunk=%d "
+            "retry_round=%d before resubmission — new payload=%s",
+            chunk_index, retry_round, rel_path,
         )
 
     resp = fts_client.post("/jobs", payload)
@@ -234,6 +260,22 @@ def _recover_or_submit(fts_client, config, run_id, chunk_index, retry_round,
         chunk_index, resp.status_code,
         "Unexpected HTTP {} on resume resubmission".format(resp.status_code),
     )
+
+
+def _remint_payload(payload):
+    # type: (dict) -> dict
+    """Return a deep copy of *payload* with every file's destination reminted.
+
+    Only called when ``destination_naming == "uuid"`` and a genuine
+    resubmission is about to happen (pre-scan found no existing job) — this
+    guarantees a duplicate live job, if one exists, never targets the same
+    destination path as the original attempt.
+    """
+    mutated = copy.deepcopy(payload)
+    for entry in mutated.get("files", []):
+        dests = entry.get("destinations") or []
+        entry["destinations"] = [dest_planner.remint(d) for d in dests]
+    return mutated
 
 
 def _scan_for_job(fts_client, run_id, chunk_index, retry_round, scan_window_s):

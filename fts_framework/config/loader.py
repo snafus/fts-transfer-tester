@@ -64,6 +64,7 @@ _ENV_TOKEN_ROLES = {
 
 _ALLOWED_CHECKSUM_ALGORITHMS = ("adler32",)
 _ALLOWED_VERIFY_CHECKSUM = ("both", "source", "target", "none")
+_ALLOWED_DESTINATION_NAMING = ("sequential", "uuid")
 
 # ---------------------------------------------------------------------------
 # Defaults for optional fields only.
@@ -81,6 +82,7 @@ _DEFAULTS = {
     },
     "transfer": {
         "preserve_extension": False,
+        "destination_naming": "sequential",
         "checksum_algorithm": "adler32",
         "verify_checksum": "both",
         "overwrite": False,
@@ -698,6 +700,14 @@ def _validate_transfer(config):
         raise ConfigError(
             "transfer.verify_checksum must be one of {}, got: {!r}".format(
                 _ALLOWED_VERIFY_CHECKSUM, verify
+            )
+        )
+
+    destination_naming = config["transfer"]["destination_naming"]
+    if destination_naming not in _ALLOWED_DESTINATION_NAMING:
+        raise ConfigError(
+            "transfer.destination_naming must be one of {}, got: {!r}".format(
+                _ALLOWED_DESTINATION_NAMING, destination_naming
             )
         )
 

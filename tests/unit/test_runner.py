@@ -1058,6 +1058,133 @@ class TestRunCampaign:
 
         assert rounds_submitted == [0, 1, 2]
 
+    def test_sequential_mode_retry_reuses_same_destination(self, tmp_path, monkeypatch):
+        """Default (sequential) mode: retry destinations are unchanged from round to round."""
+        import fts_framework.runner as runner_mod
+        import fts_framework.fts.collector as collector_mod
+
+        _install_run_campaign_mocks(monkeypatch, tmp_path)
+
+        captured = []
+        mocked_submit = runner_mod._submit_chunks
+
+        def tracking_submit(mapping, checksums, config, run_id, retry_round, client, runs_dir):
+            captured.append((retry_round, list(mapping)))
+            return mocked_submit(mapping, checksums, config, run_id, retry_round, client, runs_dir)
+        monkeypatch.setattr(runner_mod, "_submit_chunks", tracking_submit)
+
+        harvest_calls = [0]
+        def fake_harvest(subjobs, client, run_id=None, runs_dir=None):
+            harvest_calls[0] += 1
+            if harvest_calls[0] == 1:
+                return ([{"source_surl": "https://src/f1", "file_state": "FAILED",
+                          "dest_surl": "https://dst/f1"}], [], [])
+            return ([{"source_surl": "https://src/f1", "file_state": "FINISHED",
+                      "dest_surl": "https://dst/f1"}], [], [])
+        monkeypatch.setattr(collector_mod, "harvest_all", fake_harvest)
+
+        config = dict(_base_config())
+        config["retry"] = {"framework_retry_max": 1}
+        from fts_framework.runner import run_campaign
+        run_campaign(config, runs_dir=str(tmp_path))
+
+        round0_mapping = dict(captured[0][1])
+        round1_mapping = dict(captured[1][1])
+        assert round0_mapping["https://src/f1"] == round1_mapping["https://src/f1"]
+
+    def test_uuid_mode_retry_destinations_reminted_each_round(self, tmp_path, monkeypatch):
+        """uuid mode: each retry round mints a fresh destination, and the next
+        round continues from the latest one rather than the stale original."""
+        import fts_framework.runner as runner_mod
+        import fts_framework.fts.collector as collector_mod
+
+        _install_run_campaign_mocks(monkeypatch, tmp_path)
+
+        captured = []
+        mocked_submit = runner_mod._submit_chunks
+
+        def tracking_submit(mapping, checksums, config, run_id, retry_round, client, runs_dir):
+            captured.append((retry_round, list(mapping)))
+            return mocked_submit(mapping, checksums, config, run_id, retry_round, client, runs_dir)
+        monkeypatch.setattr(runner_mod, "_submit_chunks", tracking_submit)
+
+        # Round 0 + round 1: FAILED; round 2: FINISHED
+        harvest_calls = [0]
+        def fake_harvest(subjobs, client, run_id=None, runs_dir=None):
+            harvest_calls[0] += 1
+            dest = captured[-1][1][0][1] if captured else "https://dst/f1"
+            if harvest_calls[0] <= 2:
+                return ([{"source_surl": "https://src/f1", "file_state": "FAILED",
+                          "dest_surl": dest}], [], [])
+            return ([{"source_surl": "https://src/f1", "file_state": "FINISHED",
+                      "dest_surl": dest}], [], [])
+        monkeypatch.setattr(collector_mod, "harvest_all", fake_harvest)
+
+        config = dict(_base_config())
+        config["retry"] = {"framework_retry_max": 2}
+        config["transfer"] = dict(config["transfer"], destination_naming="uuid")
+        from fts_framework.runner import run_campaign
+        run_campaign(config, runs_dir=str(tmp_path))
+
+        original_dst = "https://dst/f1"
+        round0_dst = dict(captured[0][1])["https://src/f1"]
+        round1_dst = dict(captured[1][1])["https://src/f1"]
+        round2_dst = dict(captured[2][1])["https://src/f1"]
+
+        assert round0_dst == original_dst  # initial submission unaffected
+        assert round1_dst != original_dst  # round-1 retry reminted
+        assert round2_dst != round1_dst    # round-2 retry reminted again, from latest
+
+    def test_uuid_mode_duplicate_source_pfn_only_failed_occurrence_reminted(
+        self, tmp_path, monkeypatch,
+    ):
+        """Duplicate source PFNs (sampling padding) share a source but have
+        distinct destinations; only the occurrence that actually failed
+        should be reminted/resubmitted, not sibling successful occurrences."""
+        import fts_framework.runner as runner_mod
+        import fts_framework.fts.collector as collector_mod
+
+        _install_run_campaign_mocks(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            "fts_framework.destination.planner.plan",
+            lambda pfns, config: [
+                ("https://src/f1", "https://dst/f1-a"),
+                ("https://src/f1", "https://dst/f1-b"),
+            ],
+        )
+
+        captured = []
+        mocked_submit = runner_mod._submit_chunks
+
+        def tracking_submit(mapping, checksums, config, run_id, retry_round, client, runs_dir):
+            captured.append((retry_round, list(mapping)))
+            return mocked_submit(mapping, checksums, config, run_id, retry_round, client, runs_dir)
+        monkeypatch.setattr(runner_mod, "_submit_chunks", tracking_submit)
+
+        # Only the "-a" occurrence failed; "-b" succeeded.
+        file_records = [
+            {"source_surl": "https://src/f1", "file_state": "FAILED",
+             "dest_surl": "https://dst/f1-a"},
+            {"source_surl": "https://src/f1", "file_state": "FINISHED",
+             "dest_surl": "https://dst/f1-b"},
+        ]
+        monkeypatch.setattr(
+            collector_mod, "harvest_all",
+            lambda subjobs, client, run_id=None, runs_dir=None: (file_records, [], []),
+        )
+
+        config = dict(_base_config())
+        config["retry"] = {"framework_retry_max": 1}
+        config["transfer"] = dict(config["transfer"], destination_naming="uuid")
+        from fts_framework.runner import run_campaign
+        run_campaign(config, runs_dir=str(tmp_path))
+
+        retry_mapping = captured[1][1]  # captured[0] is round 0 (initial submission)
+        assert len(retry_mapping) == 1
+        src, dst = retry_mapping[0]
+        assert src == "https://src/f1"
+        assert dst not in ("https://dst/f1-a", "https://dst/f1-b")
+
 
 # ---------------------------------------------------------------------------
 # main() — CLI entry point

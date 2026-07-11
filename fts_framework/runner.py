@@ -415,6 +415,7 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
     # -----------------------------------------------------------------------
     all_subjobs = list(subjobs)
     framework_retry_max = config.get("retry", {}).get("framework_retry_max", 0)
+    destination_naming = config.get("transfer", {}).get("destination_naming", "sequential")
     retry_round = 1
 
     while framework_retry_max > 0 and retry_round <= framework_retry_max:
@@ -443,13 +444,35 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
             retry_round, len(failed), len(submission_failed_pfns),
         )
 
-        failed_sources = {fr["source_surl"] for fr in failed}
-        failed_sources.update(submission_failed_pfns)
+        if destination_naming == "uuid":
+            # Match FAILED/CANCELED file records on the exact (source, dest)
+            # pair FTS3 actually used, not just the source PFN — planner.plan()
+            # allows duplicate source PFNs (sampling padding), each with its
+            # own destination, and reminting is destructive: matching on
+            # source alone would remint (and resubmit) every occurrence of a
+            # repeated source, including ones that already succeeded.
+            # submission_failed_pfns have no file record yet (no dest_surl
+            # available) and are still matched by source alone.
+            submission_failed_set = set(submission_failed_pfns)
+            failed_pairs = {(fr["source_surl"], fr.get("dest_surl")) for fr in failed}
+            retry_mapping = []
+            remap = {}
+            for src, dst in mapping:
+                if (src, dst) in failed_pairs or src in submission_failed_set:
+                    new_dst = dest_planner.remint(dst)
+                    retry_mapping.append((src, new_dst))
+                    remap[(src, dst)] = new_dst
+            # Fold reminted destinations back so a later round continues from
+            # the latest destination rather than the stale original.
+            mapping = [(src, remap.get((src, dst), dst)) for src, dst in mapping]
+        else:
+            failed_sources = {fr["source_surl"] for fr in failed}
+            failed_sources.update(submission_failed_pfns)
 
-        retry_mapping = [
-            (src, dst) for src, dst in mapping
-            if src in failed_sources
-        ]
+            retry_mapping = [
+                (src, dst) for src, dst in mapping
+                if src in failed_sources
+            ]
 
         retry_subjobs = _submit_chunks(
             retry_mapping, checksums, config, run_id, retry_round,

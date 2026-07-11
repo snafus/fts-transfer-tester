@@ -428,6 +428,25 @@ class TestWritePayload:
         rel = write_payload("r1", 0, 0, {}, runs_dir=str(tmp_path))
         assert rel == os.path.join("submitted_payloads", "chunk_0000_r0.json")
 
+    def test_attempt_suffix_produces_new_filename(self, tmp_path):
+        init_run_directory("r1", _config(), runs_dir=str(tmp_path))
+        rel = write_payload("r1", 0, 0, {}, runs_dir=str(tmp_path), attempt_suffix="ab12cd34")
+        assert rel == os.path.join("submitted_payloads", "chunk_0000_r0_aab12cd34.json")
+
+    def test_attempt_suffix_does_not_overwrite_original(self, tmp_path):
+        init_run_directory("r1", _config(), runs_dir=str(tmp_path))
+        write_payload("r1", 0, 0, {"marker": "original"}, runs_dir=str(tmp_path))
+        write_payload("r1", 0, 0, {"marker": "resubmit"}, runs_dir=str(tmp_path),
+                      attempt_suffix="ab12cd34")
+        original_path = os.path.join(str(tmp_path), "r1", "submitted_payloads",
+                                      "chunk_0000_r0.json")
+        attempt_path = os.path.join(str(tmp_path), "r1", "submitted_payloads",
+                                     "chunk_0000_r0_aab12cd34.json")
+        with open(original_path) as fh:
+            assert json.load(fh)["marker"] == "original"
+        with open(attempt_path) as fh:
+            assert json.load(fh)["marker"] == "resubmit"
+
     def test_payload_content_round_trips(self, tmp_path):
         init_run_directory("r1", _config(), runs_dir=str(tmp_path))
         payload = {"files": [{"source": "https://src/f"}], "priority": 3}

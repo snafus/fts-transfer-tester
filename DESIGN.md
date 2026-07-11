@@ -460,6 +460,48 @@ def compute_destination_mapping(pfns, dst_prefix, test_label, preserve_extension
 
 The mapping is written to `runs/<run_id>/manifest.json` immediately after computation and before any network activity.
 
+#### Opt-in UUID naming and per-attempt reminting
+
+`transfer.destination_naming` may be set to `"uuid"` (default: `"sequential"`,
+the algorithm above). In `"uuid"` mode:
+
+- `testfile_{:06d}` is replaced with `testfile_{uuid4().hex}` at plan time.
+- Every genuine resubmission attempt — the resume fallback repost in
+  `resume/controller.py::_recover_or_submit`, and each framework retry round
+  in `runner.py` — mints a **fresh** destination for the affected file(s)
+  via `destination.planner.remint(dest_url)`, instead of reusing the
+  destination already recorded in `manifest["destination_mapping"]`.
+
+This exists because the 500-recovery and crash-resume mitigations are not
+airtight: `runner.py` persists `job_id`s to the manifest once per submission
+round rather than per chunk, and the resume-time pre-scan
+(`_scan_for_job`) uses a coarse (≥1h) window with a single attempt. If a
+crash-resume happens outside that window, the pre-scan can miss a still-live
+original job and a duplicate job gets created for the same chunk. In
+`"sequential"` mode that duplicate targets the *identical* destination URL as
+the (possibly still-transferring) original — two transfer agents writing the
+same path. In `"uuid"` mode the duplicate targets a different path, so the
+collision cannot happen (a wasted duplicate transfer can still occur, but not
+a destructive write race).
+
+Because reminting happens after the plan is written, `manifest["destination_mapping"]`
+reflects the **initial plan only** — it is not updated when a resubmission
+mints a new destination. The actually-submitted destination for any reminted
+attempt is captured in the persisted payload JSON under
+`submitted_payloads/` (raw-data-first), which is authoritative for that
+attempt. Nothing downstream needs `destination_mapping` updated for
+correctness: `cleanup_pre` only runs once before the initial submission, and
+`cleanup_post`/`metrics/engine.py` derive destinations purely from FTS3's own
+per-file `dest_surl`, never from the planner's mapping.
+
+Framework retries additionally have to disambiguate duplicate source PFNs
+(`plan()` allows a source PFN to appear more than once, e.g. sampling
+padding — each occurrence gets its own destination). The retry loop matches
+FAILED/CANCELED file records on the exact `(source_surl, dest_surl)` pair
+before reminting, so only the occurrence that actually failed is resubmitted
+— sibling occurrences of the same source that already succeeded are left
+untouched.
+
 ### Chunking
 
 ```python
@@ -789,7 +831,10 @@ runs/
     ├── submitted_payloads/
     │   ├── chunk_0000_r0.json      # exact POST body for chunk 0, retry round 0
     │   ├── chunk_0001_r0.json
-    │   └── chunk_0000_r1.json      # framework retry round 1 (if applicable)
+    │   ├── chunk_0000_r1.json      # framework retry round 1 (if applicable)
+    │   └── chunk_0000_r0_a3f2a1b9.json  # uuid-mode resume repost with reminted
+    │                                     # destinations (original chunk_0000_r0.json
+    │                                     # is preserved untouched, never overwritten)
     ├── raw/
     │   ├── jobs/
     │   │   ├── <job_id>_poll_0.json
@@ -845,7 +890,7 @@ runs/
 
 ### Reproducibility Guarantees
 
-1. **Destination mapping is fixed** at planning time and persisted. A rerun of the same `run_id` uses identical destinations.
+1. **Destination mapping is fixed** at planning time and persisted. A rerun of the same `run_id` uses identical destinations — *except* that with `transfer.destination_naming: uuid`, a genuine resubmission attempt (resume fallback repost, framework retry) deliberately mints a fresh destination rather than reusing the plan's one, to avoid a duplicate live job colliding with a still-in-flight original (see §7). In that mode, `destination_mapping` reflects the initial plan only; the destination actually used for a reminted attempt lives in the corresponding `submitted_payloads/` file, not in the manifest.
 2. **All submitted payloads** are persisted before transmission. Any job can be manually resubmitted from disk.
 3. **All raw REST responses** are persisted before normalisation. Reports can be regenerated with `python -m fts_framework report --run-id <id>` without any network access.
 4. **Config is copied** (tokens redacted) into the run directory. The exact config for any historical run is recoverable.

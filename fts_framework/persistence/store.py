@@ -223,8 +223,8 @@ def write_raw(run_id, category, filename, data, runs_dir=_DEFAULT_RUNS_DIR):
 # ---------------------------------------------------------------------------
 
 def write_payload(run_id, chunk_index, retry_round, payload,
-                  runs_dir=_DEFAULT_RUNS_DIR):
-    # type: (str, int, int, dict, str) -> str
+                  runs_dir=_DEFAULT_RUNS_DIR, attempt_suffix=None):
+    # type: (str, int, int, dict, str, str) -> str
     """Persist the POST body for a chunk before transmission.
 
     Storage tokens (``source_token``, ``destination_token``) are redacted
@@ -236,12 +236,21 @@ def write_payload(run_id, chunk_index, retry_round, payload,
         retry_round (int): Framework retry round (0 = initial submission).
         payload (dict): The full FTS3 job payload dict.
         runs_dir (str): Base directory for run outputs.
+        attempt_suffix (str): If set, distinguishes a resubmission attempt
+            that reused the (chunk_index, retry_round) key but mutated the
+            payload (e.g. reminted destinations) — written as a new file
+            (``chunk_{idx}_r{round}_a{suffix}.json``) rather than overwriting
+            the original persisted payload. ``None`` (default) preserves the
+            original filename exactly.
 
     Returns:
         str: Relative path (from run root) of the written file, suitable for
             storage in ``SubjobRecord["payload_path"]``.
     """
-    filename = "chunk_{:04d}_r{}.json".format(chunk_index, retry_round)
+    if attempt_suffix is not None:
+        filename = "chunk_{:04d}_r{}_a{}.json".format(chunk_index, retry_round, attempt_suffix)
+    else:
+        filename = "chunk_{:04d}_r{}.json".format(chunk_index, retry_round)
     rel_path = os.path.join("submitted_payloads", filename)
     abs_path = os.path.join(runs_dir, run_id, rel_path)
     _write_json(abs_path, _redact_payload(payload))

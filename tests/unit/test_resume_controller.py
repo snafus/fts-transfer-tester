@@ -18,7 +18,7 @@ from fts_framework.persistence import store
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _config(scan_window_s=300):
+def _config(scan_window_s=300, destination_naming="sequential"):
     return {
         "run": {"test_label": "test"},
         "fts": {"endpoint": "https://fts.example.org:8446", "ssl_verify": True},
@@ -26,6 +26,7 @@ def _config(scan_window_s=300):
             "fts_submit": "tok_s", "source_read": "tok_r", "dest_write": "tok_w",
         },
         "submission": {"scan_window_s": scan_window_s},
+        "transfer": {"destination_naming": destination_naming},
     }
 
 
@@ -74,6 +75,29 @@ def _write_payload(tmp_path, run_id, chunk_index, retry_round, file_count=2):
     return path
 
 
+def _write_prod_payload(tmp_path, run_id, chunk_index, retry_round, file_count=2):
+    """Write a synthetic payload matching the real build_payload() schema
+    (``sources``/``destinations`` lists), needed to exercise destination
+    reminting, which reads ``entry["destinations"]``."""
+    filename = "chunk_{:04d}_r{}.json".format(chunk_index, retry_round)
+    payload = {
+        "files": [{
+            "sources": ["https://src.example.org/f{}".format(i)],
+            "destinations": ["https://dst.example.org/data/test/testfile_{:06d}".format(i)],
+        } for i in range(file_count)],
+        "params": {},
+        "job_metadata": {
+            "run_id": run_id,
+            "chunk_index": chunk_index,
+            "retry_round": retry_round,
+        },
+    }
+    path = os.path.join(str(tmp_path), run_id, "submitted_payloads", filename)
+    with open(path, "w") as fh:
+        json.dump(payload, fh)
+    return path
+
+
 class _FakeClient:
     """Configurable fake FTS3 client."""
 
@@ -82,6 +106,7 @@ class _FakeClient:
         self._responses = list(responses or [])
         self.get_calls = []
         self.post_calls = []
+        self.post_payloads = []
 
     def get(self, path, **kwargs):
         self.get_calls.append(path)
@@ -94,6 +119,7 @@ class _FakeClient:
 
     def post(self, path, payload=None, **kwargs):
         self.post_calls.append(path)
+        self.post_payloads.append(payload)
         if not self._responses:
             raise AssertionError("Unexpected post() for {}".format(path))
         item = self._responses.pop(0)
@@ -253,6 +279,88 @@ class TestLoadMissingChunkRecovery:
         ])
         result = load("r1", client, _config(), runs_dir=str(tmp_path))
         assert result[0]["terminal"] is False
+
+
+# ---------------------------------------------------------------------------
+# load — uuid destination_naming: reminting on genuine resubmission
+# ---------------------------------------------------------------------------
+
+class TestLoadUuidResubmission:
+    def test_reminted_payload_differs_from_original(self, tmp_path):
+        _setup_run(tmp_path, "r1")
+        original_path = _write_prod_payload(tmp_path, "r1", chunk_index=0, retry_round=0)
+        with open(original_path) as fh:
+            original_payload = json.load(fh)
+
+        client = _FakeClient([
+            [],  # pre-scan: no match
+            _FakeResponse(200, {"job_id": "job-new"}),  # POST
+        ])
+        load("r1", client, _config(destination_naming="uuid"), runs_dir=str(tmp_path))
+
+        posted = client.post_payloads[0]
+        original_dests = [f["destinations"][0] for f in original_payload["files"]]
+        posted_dests = [f["destinations"][0] for f in posted["files"]]
+        assert posted_dests != original_dests
+        for orig, new in zip(original_dests, posted_dests):
+            # Directory (dst_prefix/test_label) preserved, basename changed
+            assert orig.rsplit("/", 1)[0] == new.rsplit("/", 1)[0]
+            assert orig != new
+
+    def test_original_payload_file_not_overwritten(self, tmp_path):
+        _setup_run(tmp_path, "r1")
+        original_path = _write_prod_payload(tmp_path, "r1", chunk_index=0, retry_round=0)
+        with open(original_path) as fh:
+            original_before = json.load(fh)
+
+        client = _FakeClient([[], _FakeResponse(200, {"job_id": "job-new"})])
+        load("r1", client, _config(destination_naming="uuid"), runs_dir=str(tmp_path))
+
+        with open(original_path) as fh:
+            original_after = json.load(fh)
+        assert original_after == original_before
+
+    def test_new_attempt_payload_file_written(self, tmp_path):
+        _setup_run(tmp_path, "r1")
+        _write_prod_payload(tmp_path, "r1", chunk_index=0, retry_round=0)
+        payload_dir = os.path.join(str(tmp_path), "r1", "submitted_payloads")
+
+        client = _FakeClient([[], _FakeResponse(200, {"job_id": "job-new"})])
+        load("r1", client, _config(destination_naming="uuid"), runs_dir=str(tmp_path))
+
+        filenames = os.listdir(payload_dir)
+        assert "chunk_0000_r0.json" in filenames
+        attempt_files = [f for f in filenames if f.startswith("chunk_0000_r0_a")]
+        assert len(attempt_files) == 1
+
+    def test_sequential_mode_posts_original_payload_unchanged(self, tmp_path):
+        _setup_run(tmp_path, "r1")
+        original_path = _write_prod_payload(tmp_path, "r1", chunk_index=0, retry_round=0)
+        with open(original_path) as fh:
+            original_payload = json.load(fh)
+
+        client = _FakeClient([[], _FakeResponse(200, {"job_id": "job-new"})])
+        load("r1", client, _config(destination_naming="sequential"), runs_dir=str(tmp_path))
+
+        assert client.post_payloads[0] == original_payload
+
+    def test_default_config_without_transfer_section_behaves_sequential(self, tmp_path):
+        # Old manifests / configs may lack a "transfer" key entirely.
+        _setup_run(tmp_path, "r1")
+        original_path = _write_prod_payload(tmp_path, "r1", chunk_index=0, retry_round=0)
+        with open(original_path) as fh:
+            original_payload = json.load(fh)
+
+        bare_config = {
+            "run": {"test_label": "test"},
+            "fts": {"endpoint": "https://fts.example.org:8446", "ssl_verify": True},
+            "tokens": {"fts_submit": "t", "source_read": "t", "dest_write": "t"},
+            "submission": {"scan_window_s": 300},
+        }
+        client = _FakeClient([[], _FakeResponse(200, {"job_id": "job-new"})])
+        load("r1", client, bare_config, runs_dir=str(tmp_path))
+
+        assert client.post_payloads[0] == original_payload
 
 
 # ---------------------------------------------------------------------------

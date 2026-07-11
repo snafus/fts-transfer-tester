@@ -113,6 +113,22 @@ POST /jobs returning 500 does not mean the job was not created. Always scan befo
 
 `scan_window_s` config key (default 300s). Framework keys in `job_metadata` always overwrite user-supplied keys.
 
+Even with this scan, a genuine duplicate live job can still occur: `runner.py`
+only calls `store.update_manifest()` once per submission round (not per
+chunk), and the resume-time pre-scan (`resume/controller.py::_scan_for_job`)
+uses a coarse window (≥1h, single attempt). If a crash-resume happens outside
+that window, a duplicate job can be created targeting the *same* destination
+as a still-live original — two transfer agents writing the same path. The
+opt-in `transfer.destination_naming: uuid` mode closes this specific
+collision: every real resubmission attempt (resume fallback repost,
+framework retry round) mints a **fresh** destination via
+`destination.planner.remint()` rather than reusing the original, so a
+duplicate job (if one occurs) can never write to the same path as another.
+Default (`sequential`) mode does not have this protection — destinations
+there are 100% deterministic, so this is opt-in, not automatic. See
+`resume/controller.py::_recover_or_submit` and the framework retry loop in
+`runner.py` for the two call sites.
+
 ## Key Design Decisions (do not revisit without user instruction)
 
 | Decision | Value |
@@ -120,7 +136,7 @@ POST /jobs returning 500 does not mean the job was not created. Always scan befo
 | Checksum algorithm | ADLER32 only |
 | Checksum source | WebDAV `Want-Digest: adler32` HEAD request pre-submission |
 | Want-Digest format | Expect hex; detect base64 and convert; hard fail if neither parses |
-| Destination pattern | `{dst_prefix}/{test_label}/testfile_{N:06d}[.ext]` |
+| Destination pattern | `{dst_prefix}/{test_label}/testfile_{N:06d}[.ext]` (default); opt-in `transfer.destination_naming: uuid` uses `testfile_{uuid4().hex}[.ext]` instead, and mints a **fresh** destination on every genuine resubmission attempt (resume fallback repost, framework retry) — see `destination.planner.remint()` |
 | File extension | Optional; default off (`preserve_extension: false`) |
 | Throughput primary source | `file.throughput` (agent-reported); fallback to `filesize/tx_duration` |
 | Concurrency model | Observe only; derive from file timestamps; never touch FTS3 link config API |

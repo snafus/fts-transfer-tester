@@ -4,7 +4,7 @@ Unit tests for fts_framework.destination.planner.
 
 import pytest
 
-from fts_framework.destination.planner import plan, _extract_extension
+from fts_framework.destination.planner import plan, remint, _extract_extension
 from fts_framework.exceptions import ConfigError
 
 
@@ -14,12 +14,14 @@ from fts_framework.exceptions import ConfigError
 
 def _config(dst_prefix="https://storage.example.org/data",
             test_label="campaign_test",
-            preserve_extension=False):
+            preserve_extension=False,
+            destination_naming="sequential"):
     return {
         "run": {"test_label": test_label},
         "transfer": {
             "dst_prefix": dst_prefix,
             "preserve_extension": preserve_extension,
+            "destination_naming": destination_naming,
         },
     }
 
@@ -221,15 +223,99 @@ class TestDuplicatePfnSupport:
 
 
 # ---------------------------------------------------------------------------
+# plan — uuid destination_naming mode
+# ---------------------------------------------------------------------------
+
+class TestUuidNaming:
+    def test_default_naming_is_sequential(self):
+        pfns = ["https://src.example.org/file.dat"]
+        config = _config()
+        del config["transfer"]["destination_naming"]
+        mapping = plan(pfns, config)
+        assert _dsts(mapping)[0].endswith("testfile_000000")
+
+    def test_uuid_mode_not_sequential(self):
+        pfns = ["https://src.example.org/f{:02d}.dat".format(i) for i in range(5)]
+        mapping = plan(pfns, _config(destination_naming="uuid"))
+        for dst in _dsts(mapping):
+            assert "testfile_000000" not in dst
+            assert "testfile_000001" not in dst
+
+    def test_uuid_mode_basenames_are_unique(self):
+        pfns = ["https://src.example.org/f{:02d}.dat".format(i) for i in range(20)]
+        mapping = plan(pfns, _config(destination_naming="uuid"))
+        assert len(set(_dsts(mapping))) == 20
+
+    def test_uuid_mode_preserves_directory(self):
+        pfns = ["https://src.example.org/file.dat"]
+        mapping = plan(pfns, _config(
+            dst_prefix="https://storage.example.org/data",
+            test_label="my_run",
+            destination_naming="uuid",
+        ))
+        dest = _dsts(mapping)[0]
+        assert dest.startswith("https://storage.example.org/data/my_run/testfile_")
+
+    def test_uuid_mode_respects_preserve_extension(self):
+        pfns = ["https://src.example.org/file.dat"]
+        mapping = plan(pfns, _config(destination_naming="uuid", preserve_extension=True))
+        assert _dsts(mapping)[0].endswith(".dat")
+
+    def test_uuid_mode_basename_is_hex(self):
+        pfns = ["https://src.example.org/file.dat"]
+        mapping = plan(pfns, _config(destination_naming="uuid"))
+        basename = _dsts(mapping)[0].rsplit("/", 1)[-1]
+        token = basename[len("testfile_"):]
+        assert len(token) == 32
+        int(token, 16)  # raises ValueError if not valid hex
+
+
+# ---------------------------------------------------------------------------
+# remint — fresh destination for resubmission attempts
+# ---------------------------------------------------------------------------
+
+class TestRemint:
+    def test_preserves_directory(self):
+        original = "https://storage.example.org/data/campaign_test/testfile_000042"
+        new = remint(original)
+        assert new.startswith("https://storage.example.org/data/campaign_test/testfile_")
+
+    def test_different_from_original(self):
+        original = "https://storage.example.org/data/campaign_test/testfile_000042"
+        assert remint(original) != original
+
+    def test_different_on_each_call(self):
+        original = "https://storage.example.org/data/campaign_test/testfile_000042"
+        assert remint(original) != remint(original)
+
+    def test_preserves_extension(self):
+        original = "https://storage.example.org/data/campaign_test/testfile_000042.dat"
+        new = remint(original)
+        assert new.endswith(".dat")
+
+    def test_no_extension_preserved_when_absent(self):
+        original = "https://storage.example.org/data/campaign_test/testfile_000042"
+        new = remint(original)
+        assert "." not in new.rsplit("/", 1)[-1]
+
+    def test_works_with_multi_destination_prefix(self):
+        original = "https://site-1.example.org/data/campaign_test/testfile_000007"
+        new = remint(original)
+        assert new.startswith("https://site-1.example.org/data/campaign_test/testfile_")
+
+
+# ---------------------------------------------------------------------------
 # Multi-destination weighted distribution
 # ---------------------------------------------------------------------------
 
-def _multi_config(destinations, test_label="campaign_test", preserve_extension=False):
+def _multi_config(destinations, test_label="campaign_test", preserve_extension=False,
+                   destination_naming="sequential"):
     return {
         "run": {"test_label": test_label},
         "transfer": {
             "destinations": destinations,
             "preserve_extension": preserve_extension,
+            "destination_naming": destination_naming,
         },
     }
 
@@ -321,6 +407,13 @@ class TestMultiDestination:
         pfns = ["https://src.example.org/file.dat"]
         mapping = plan(pfns, _multi_config(_dest_specs(1), preserve_extension=True))
         assert _dsts(mapping)[0].endswith(".dat")
+
+    def test_uuid_naming_multi_destination(self):
+        pfns = ["https://src.example.org/f{:03d}".format(i) for i in range(10)]
+        mapping = plan(pfns, _multi_config(_dest_specs(1, 1), destination_naming="uuid"))
+        dsts = _dsts(mapping)
+        assert len(set(dsts)) == 10
+        assert not any("testfile_000000" in d for d in dsts)
 
     def test_interleaved_not_contiguous(self):
         # With equal weights, destinations must alternate rather than appear in blocks.

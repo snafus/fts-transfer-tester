@@ -430,3 +430,100 @@ class TestOidcPerTrialRefresh:
         # One fetch per trial (2 cases × 1 trial = 2), even though max_files
         # does not affect any scope template.
         assert len(fetch_calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# destination_naming as a sweep parameter (cartesian and zip)
+# ---------------------------------------------------------------------------
+
+class TestDestinationNamingSweep:
+    """Sweeping transfer.destination_naming requires no sequence-module code
+    changes — generate_cases()/apply_override() are key-agnostic — but this
+    proves the interaction actually works end-to-end rather than just by
+    inspection."""
+
+    def test_zip_mode_pairs_destination_naming_with_max_files(self):
+        from fts_framework.sequence.loader import generate_cases
+        sweep = {
+            "mode": "zip",
+            "parameters": {
+                "transfer.destination_naming": ["sequential", "uuid"],
+                "transfer.max_files": [10, 20],
+            },
+        }
+        cases = generate_cases(sweep)
+        assert cases == [
+            {"transfer.destination_naming": "sequential", "transfer.max_files": 10},
+            {"transfer.destination_naming": "uuid", "transfer.max_files": 20},
+        ]
+
+    def test_cartesian_mode_crosses_destination_naming_with_max_files(self):
+        from fts_framework.sequence.loader import generate_cases
+        sweep = {
+            "mode": "cartesian",
+            "parameters": {
+                "transfer.destination_naming": ["sequential", "uuid"],
+                "transfer.max_files": [10, 20],
+            },
+        }
+        cases = generate_cases(sweep)
+        assert len(cases) == 4
+        naming_values = {c["transfer.destination_naming"] for c in cases}
+        assert naming_values == {"sequential", "uuid"}
+        # every (naming, max_files) combination present exactly once
+        combos = {(c["transfer.destination_naming"], c["transfer.max_files"]) for c in cases}
+        assert combos == {
+            ("sequential", 10), ("sequential", 20),
+            ("uuid", 10), ("uuid", 20),
+        }
+
+    def test_build_trial_config_applies_destination_naming_override(self):
+        from fts_framework.sequence.runner import _build_trial_config
+        baseline = _base_config()
+        baseline["transfer"]["destination_naming"] = "sequential"  # explicit default
+
+        trial_uuid = _build_trial_config(baseline, {"transfer.destination_naming": "uuid"})
+        trial_seq = _build_trial_config(baseline, {"transfer.destination_naming": "sequential"})
+
+        assert trial_uuid["transfer"]["destination_naming"] == "uuid"
+        assert trial_seq["transfer"]["destination_naming"] == "sequential"
+        # baseline itself must not be mutated (deep-copy contract)
+        assert baseline["transfer"]["destination_naming"] == "sequential"
+
+    def test_build_trial_config_sets_new_key_when_baseline_lacks_it(self):
+        """A baseline config predating this feature has no destination_naming
+        key at all; apply_override must still be able to set it (only the
+        intermediate section, 'transfer', needs to pre-exist)."""
+        from fts_framework.sequence.runner import _build_trial_config
+        baseline = _base_config()
+        assert "destination_naming" not in baseline["transfer"]
+
+        trial = _build_trial_config(baseline, {"transfer.destination_naming": "uuid"})
+        assert trial["transfer"]["destination_naming"] == "uuid"
+
+    def test_per_case_config_produces_correct_planner_naming(self):
+        """End-to-end: a zip-swept destination_naming value, once applied to
+        a trial config via _build_trial_config, actually changes the
+        destination.planner.plan() naming style."""
+        from fts_framework.sequence.loader import generate_cases
+        from fts_framework.sequence.runner import _build_trial_config
+        from fts_framework.destination.planner import plan
+
+        sweep = {
+            "mode": "zip",
+            "parameters": {"transfer.destination_naming": ["sequential", "uuid"]},
+        }
+        cases = generate_cases(sweep)
+        baseline = _base_config()
+        baseline["transfer"]["preserve_extension"] = False
+        pfns = ["https://src.example.org/f{:02d}.dat".format(i) for i in range(3)]
+
+        trial_configs = [_build_trial_config(baseline, case) for case in cases]
+        mappings = [plan(pfns, cfg) for cfg in trial_configs]
+
+        sequential_dsts = [dst for src, dst in mappings[0]]
+        uuid_dsts = [dst for src, dst in mappings[1]]
+
+        assert all(d.endswith("testfile_{:06d}".format(i)) for i, d in enumerate(sequential_dsts))
+        assert not any("testfile_000000" in d or "testfile_000001" in d for d in uuid_dsts)
+        assert len(set(uuid_dsts)) == 3

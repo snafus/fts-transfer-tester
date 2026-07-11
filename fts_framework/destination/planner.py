@@ -11,9 +11,20 @@ where *N* is the zero-based index of the PFN in the alphabetically sorted
 inventory.  The sort guarantees the same mapping is produced on every run from
 the same input set, regardless of the order PFNs appear in the inventory file.
 
+If ``transfer.destination_naming`` is ``"uuid"`` (default: ``"sequential"``),
+the basename is a random hex token instead of the zero-padded index. This is
+an opt-in, per-attempt-safety naming mode: see :func:`remint`, which mints a
+fresh destination for genuine resubmission attempts (framework retry, resume
+fallback repost) so a duplicate live job can never write to the same path as
+a still-in-flight or already-accepted prior attempt.
+
 The mapping is an ``OrderedDict`` keyed by source PFN, preserving the sorted
 iteration order.  It must be persisted to the run manifest before any network
-activity begins; resuming a run uses the persisted mapping verbatim.
+activity begins; resuming a run uses the persisted mapping verbatim — the
+manifest's ``destination_mapping`` always reflects the initial plan only. Any
+resubmission that mints a fresh destination via ``remint()`` records that
+actual destination in the persisted payload JSON under
+``submitted_payloads/``, not in the manifest.
 
 Usage::
 
@@ -23,6 +34,7 @@ Usage::
 
 import logging
 import os
+import uuid
 
 from fts_framework.exceptions import ConfigError
 
@@ -69,12 +81,15 @@ def _plan_single_destination(pfns, config):
     dst_prefix   = config["transfer"]["dst_prefix"].rstrip("/")
     test_label   = config["run"]["test_label"]
     preserve_ext = config["transfer"]["preserve_extension"]
+    naming       = config["transfer"].get("destination_naming", "sequential")
 
     sorted_pfns = sorted(pfns)
     mapping = []
     for idx, pfn in enumerate(sorted_pfns):
         ext  = _extract_extension(pfn) if preserve_ext else ""
-        dest = "{}/{}/testfile_{:06d}{}".format(dst_prefix, test_label, idx, ext)
+        dest = "{}/{}/testfile_{}{}".format(
+            dst_prefix, test_label, _basename_token(idx, naming), ext,
+        )
         mapping.append((pfn, dest))
 
     logger.info(
@@ -101,6 +116,7 @@ def _plan_multi_destination(pfns, destinations, config):
     """
     test_label   = config["run"]["test_label"]
     preserve_ext = config["transfer"]["preserve_extension"]
+    naming       = config["transfer"].get("destination_naming", "sequential")
 
     sorted_pfns = sorted(pfns)
     n           = len(sorted_pfns)
@@ -148,11 +164,47 @@ def _plan_multi_destination(pfns, destinations, config):
     for pfn, (dest_idx, local_idx) in zip(sorted_pfns, sequence):
         prefix = destinations[dest_idx]["prefix"].rstrip("/")
         ext    = _extract_extension(pfn) if preserve_ext else ""
-        mapping.append((pfn, "{}/{}/testfile_{:06d}{}".format(
-            prefix, test_label, local_idx, ext,
+        mapping.append((pfn, "{}/{}/testfile_{}{}".format(
+            prefix, test_label, _basename_token(local_idx, naming), ext,
         )))
 
     return mapping
+
+
+def remint(dest_url):
+    # type: (str) -> str
+    """Return a new destination URL in the same directory as *dest_url*.
+
+    Used only when a real resubmission attempt is about to reuse a
+    destination already assigned by :func:`plan` — a fresh basename ensures
+    a duplicate live job (e.g. from a resume race) never writes to the same
+    path as a still-in-flight or already-accepted prior attempt. The
+    extension is preserved (if any); the directory (dst_prefix/test_label)
+    is preserved verbatim.
+
+    Args:
+        dest_url (str): A destination URL previously produced by ``plan()``.
+
+    Returns:
+        str: A new destination URL with a fresh random basename.
+    """
+    directory = dest_url.rsplit("/", 1)[0]
+    ext = _extract_extension(dest_url)
+    return "{}/testfile_{}{}".format(directory, uuid.uuid4().hex, ext)
+
+
+def _basename_token(idx, naming):
+    # type: (int, str) -> str
+    """Return the ``testfile_`` basename token for index *idx*.
+
+    ``"sequential"`` (default) returns the zero-padded index, preserving the
+    original deterministic naming.  ``"uuid"`` returns a random hex token so
+    that repeated resubmission attempts (see :func:`remint`) cannot collide
+    with a still-live job at the same destination.
+    """
+    if naming == "uuid":
+        return uuid.uuid4().hex
+    return "{:06d}".format(idx)
 
 
 def _extract_extension(pfn):
