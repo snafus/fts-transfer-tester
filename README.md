@@ -490,6 +490,7 @@ fts-run <config> [options]
 | `--fts-submit-token TOKEN` | Token for FTS3 job submission (overrides `FTS_SUBMIT_TOKEN` env var) |
 | `--source-read-token TOKEN` | Token for source storage reads (overrides `SOURCE_READ_TOKEN` env var) |
 | `--dest-write-token TOKEN` | Token for destination storage writes (overrides `DEST_WRITE_TOKEN` env var) |
+| `--cancel-job JOB_ID` | Cancel a single FTS3 job by ID (`DELETE /jobs/{id}`) using the endpoint/token resolved from `config`, then exit. No campaign is run. |
 
 Token precedence: per-role CLI flags > `--token` > per-role env vars > `FTS_TOKEN` > YAML. See [Token resolution order](#token-resolution-order).
 
@@ -520,7 +521,12 @@ fts-run campaign.yaml   # with run.run_id set in YAML to the existing run_id
 
 # Pipe JSON report to jq
 cat runs/<run_id>/metrics/snapshot.json | jq '.success_rate'
+
+# Cancel a single FTS3 job by ID (any config pointed at the right endpoint/token works)
+fts-run campaign.yaml --cancel-job 1234abcd-56ef-78gh-90ij-klmnopqrstuv
 ```
+
+To cancel every non-terminal job tracked by a sequence, use `fts-sequence --cancel-jobs <SEQUENCE_DIR>` instead (see [Sequence Runner](#sequence-runner)) — it discovers job IDs automatically from `state.json` and each trial's `manifest.json`, rather than requiring a single job ID.
 
 ---
 

@@ -1252,3 +1252,106 @@ class TestMain:
         with pytest.raises(SystemExit) as exc_info:
             main()
         assert exc_info.value.code == 0
+
+
+# ---------------------------------------------------------------------------
+# main() — --cancel-job
+# ---------------------------------------------------------------------------
+
+class _FakeDeleteResponse(object):
+    def __init__(self, status_code):
+        self.status_code = status_code
+
+
+class _FakeCancelClient(object):
+    """Stand-in for FTSClient exposing only delete(), tracking calls."""
+
+    def __init__(self, endpoint, session):
+        self.endpoint = endpoint
+        self.session = session
+        self.deleted = []
+
+    def delete(self, path, **kwargs):
+        self.deleted.append(path)
+        return _FakeCancelClient.next_response
+
+
+class TestCancelJob:
+    def _install_cancel_mocks(self, monkeypatch, status_code, capture=None):
+        monkeypatch.setattr(
+            "fts_framework.config.loader.load",
+            lambda path, token=None, fts_submit_token=None, source_read_token=None, dest_write_token=None: _base_config(),
+        )
+        monkeypatch.setattr(
+            "fts_framework.fts.client.build_session",
+            lambda token, ssl_verify: object(),
+        )
+        _FakeCancelClient.next_response = _FakeDeleteResponse(status_code)
+
+        def _make_client(endpoint, session):
+            client = _FakeCancelClient(endpoint, session)
+            if capture is not None:
+                capture.append(client)
+            return client
+        monkeypatch.setattr("fts_framework.fts.client.FTSClient", _make_client)
+
+        import fts_framework.runner as runner_mod
+        run_campaign_calls = []
+        monkeypatch.setattr(
+            runner_mod, "run_campaign",
+            lambda config, runs_dir="runs": run_campaign_calls.append(1),
+        )
+        return run_campaign_calls
+
+    def test_cancel_job_success_exits_zero(self, tmp_path, monkeypatch):
+        run_campaign_calls = self._install_cancel_mocks(monkeypatch, 200)
+        monkeypatch.setattr(
+            "sys.argv", ["fts-run", "/fake/config.yaml", "--cancel-job", "job-abc-123"],
+        )
+        from fts_framework.runner import main
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 0
+        assert run_campaign_calls == []  # campaign must not run
+
+    def test_cancel_job_404_treated_as_success(self, tmp_path, monkeypatch):
+        self._install_cancel_mocks(monkeypatch, 404)
+        monkeypatch.setattr(
+            "sys.argv", ["fts-run", "/fake/config.yaml", "--cancel-job", "job-gone"],
+        )
+        from fts_framework.runner import main
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 0
+
+    def test_cancel_job_server_error_exits_one(self, tmp_path, monkeypatch):
+        self._install_cancel_mocks(monkeypatch, 500)
+        monkeypatch.setattr(
+            "sys.argv", ["fts-run", "/fake/config.yaml", "--cancel-job", "job-abc-123"],
+        )
+        from fts_framework.runner import main
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 1
+
+    def test_cancel_job_deletes_correct_path(self, tmp_path, monkeypatch):
+        captured = []
+        self._install_cancel_mocks(monkeypatch, 200, capture=captured)
+        monkeypatch.setattr(
+            "sys.argv", ["fts-run", "/fake/config.yaml", "--cancel-job", "job-xyz-999"],
+        )
+        from fts_framework.runner import main
+        with pytest.raises(SystemExit):
+            main()
+        assert captured[0].deleted == ["/jobs/job-xyz-999"]
+
+    def test_cancel_job_uses_configured_endpoint(self, tmp_path, monkeypatch):
+        captured = []
+        self._install_cancel_mocks(monkeypatch, 200, capture=captured)
+        monkeypatch.setattr(
+            "sys.argv", ["fts-run", "/fake/config.yaml", "--cancel-job", "job-1"],
+        )
+        from fts_framework.runner import main
+        with pytest.raises(SystemExit):
+            main()
+        assert captured[0].endpoint == _base_config()["fts"]["endpoint"]

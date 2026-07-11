@@ -25,6 +25,7 @@ This module wires all sub-components together in the correct sequence:
 Entry point::
 
     fts-run path/to/config.yaml
+    fts-run path/to/config.yaml --cancel-job <job_id>   # cancel one job, no campaign run
 
 Programmatic usage::
 
@@ -45,6 +46,7 @@ from fts_framework.exceptions import SubmissionError, TokenExpiredError
 from fts_framework.cleanup import manager as cleanup_manager
 from fts_framework.config import loader as config_loader
 from fts_framework.destination import planner as dest_planner
+from fts_framework.fts import canceller as fts_canceller
 from fts_framework.fts import client as fts_client_mod
 from fts_framework.fts import collector
 from fts_framework.fts import poller
@@ -589,6 +591,13 @@ def main():
         metavar="TOKEN",
         help="Bearer token for destination storage writes (overrides DEST_WRITE_TOKEN env var)",
     )
+    parser.add_argument(
+        "--cancel-job",
+        metavar="JOB_ID",
+        default=None,
+        help="Cancel a single FTS3 job by ID (DELETE /jobs/{id}) using the "
+             "endpoint/token from the given config, then exit — no campaign is run",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -604,6 +613,21 @@ def main():
         source_read_token=args.source_read_token,
         dest_write_token=args.dest_write_token,
     )
+
+    if args.cancel_job:
+        ssl_verify = config.get("fts", {}).get("ssl_verify", True)
+        fts_session = fts_client_mod.build_session(
+            config["tokens"]["fts_submit"], ssl_verify,
+        )
+        fts_client = fts_client_mod.FTSClient(config["fts"]["endpoint"], fts_session)
+        result = fts_canceller.cancel_jobs([args.cancel_job], fts_client)[0]
+        if result["cancelled"]:
+            print("Job {} cancelled (HTTP {}).".format(
+                result["job_id"], result["status_code"],
+            ))
+            sys.exit(0)
+        print("Failed to cancel job {}: {}".format(result["job_id"], result["error"]))
+        sys.exit(1)
 
     try:
         snapshot = run_campaign(config, runs_dir=args.runs_dir)
