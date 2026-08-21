@@ -353,6 +353,38 @@ Example: if `transfer.dst_prefix` is `https://storage.example.org/data/test`, th
 
 Multiple audiences are space-separated in the `scope` string (the standard WLCG convention). FTS3 does not have a dedicated audience field in the client credentials grant — include audiences in the `audience` parameter or embed them in the scope as required by your IAM.
 
+### Equivalent curl request
+
+The framework's token fetch is a single form-encoded POST (client credentials sent in the body, i.e. `client_secret_post`). To reproduce it manually — useful for debugging IAM-side issues (invalid scope, audience rejection, client auth method mismatch) independently of the framework:
+
+```bash
+curl -sS -X POST "https://iam.example.org/token" \
+  --data-urlencode "grant_type=client_credentials" \
+  --data-urlencode "client_id=${DST_CLIENT_ID}" \
+  --data-urlencode "client_secret=${DST_CLIENT_SECRET}" \
+  --data-urlencode "scope=openid storage.modify:/data/test storage.create:/data/test" \
+  --data-urlencode "audience=https://dest-storage.example.org" \
+  --max-time 30
+```
+
+Notes:
+
+- `scope` is the *post-template* value — substitute `{dst_prefix_path}`/`{src_prefix_path}` yourself (see [Scope templates](#scope-templates)).
+- Omit the `audience` line if the role config does not set one.
+- Add `-k` or `--cacert <path>` to mirror `fts.ssl_verify: false` or a CA bundle path.
+
+The framework takes `access_token` from the JSON response; the shell equivalent:
+
+```bash
+TOKEN=$(curl -sS ... | python3 -c 'import sys,json; print(json.load(sys.stdin)["access_token"])')
+```
+
+To verify the token the way the framework does at startup:
+
+```bash
+curl -sS -H "Authorization: Bearer ${TOKEN}" "https://fts3.example.org:8446/whoami"
+```
+
 ### Token forwarding to FTS3
 
 The framework passes storage tokens to FTS3 as per-file arrays in the job payload:
