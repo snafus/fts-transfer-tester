@@ -119,8 +119,9 @@ def _write_params_copy(sequence_dir, params_file):
 
 def run_sequence(params_file, resume_dir=None, runs_dir=None,
                  token=None, fts_submit_token=None,
-                 source_read_token=None, dest_write_token=None):
-    # type: (str, object, object, object, object, object, object) -> str
+                 source_read_token=None, dest_write_token=None,
+                 x509_proxy=None):
+    # type: (str, object, object, object, object, object, object, object) -> str
     """Execute (or resume) a parameter-sweep sequence of campaigns.
 
     Args:
@@ -133,6 +134,7 @@ def run_sequence(params_file, resume_dir=None, runs_dir=None,
         fts_submit_token (str | None): Per-role FTS3 submission token.
         source_read_token (str | None): Per-role source-read token.
         dest_write_token (str | None): Per-role destination-write token.
+        x509_proxy (str | None): X.509 proxy path; forces ``auth.mode: x509``.
 
     Returns:
         str: Path to the sequence output directory.
@@ -147,6 +149,7 @@ def run_sequence(params_file, resume_dir=None, runs_dir=None,
         fts_submit_token=fts_submit_token,
         source_read_token=source_read_token,
         dest_write_token=dest_write_token,
+        x509_proxy=x509_proxy,
     )
 
     # Determine / create sequence directory, then resolve runs_dir.

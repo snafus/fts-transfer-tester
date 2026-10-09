@@ -146,6 +146,7 @@ there are 100% deterministic, so this is opt-in, not automatic. See
 | Cleanup mechanism | `requests` HTTP DELETE against WebDAV/HTTPS; not via FTS3 |
 | Token refresh | Delegated to FTS3 server; framework has no refresh logic |
 | Token model | Role-keyed: `fts_submit`, `source_read`, `dest_write`; same value permitted |
+| X.509 auth | Opt-in `auth.mode: x509`: one VOMS proxy (`session.cert`) for every role; all-cert or all-token, never mixed (tokens/OIDC in x509 mode → `ConfigError`). Proxy creation and FTS3 delegation are done externally by the user; framework only checks local proxy and `GET /delegation/{id}` lifetimes at campaign start (`auth/x509.py`). No native delegation, no `cryptography` dependency |
 | Framework retry | Default off; opt-in via `framework_retry_max > 0` |
 | run_id | Framework-generated `{timestamp}_{short_uuid}` |
 | 500 recovery scan window | Configurable `scan_window_s`, default 300s (5 min) |

@@ -6,7 +6,8 @@ Top-level campaign orchestrator.
 This module wires all sub-components together in the correct sequence:
 
 1.  Initialise run directory
-2.  Validate token (``GET /whoami``)
+2.  Validate token (``GET /whoami``); in ``auth.mode: x509`` also check the
+    local proxy and FTS3 delegated-credential lifetimes (fatal on failure)
 3.  Log FTS3 link optimizer state (``GET /optimizer/current``)
 4.  Detect resume or start fresh run
 5.  (Fresh only) Load inventory, plan destinations, fetch checksums,
@@ -41,6 +42,7 @@ import sys
 import uuid
 from datetime import datetime
 
+from fts_framework.auth import x509 as x509_auth
 from fts_framework.checksum import fetcher as checksum_fetcher
 from fts_framework.exceptions import SubmissionError, TokenExpiredError
 from fts_framework.cleanup import manager as cleanup_manager
@@ -269,23 +271,31 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
     ssl_verify = config.get("fts", {}).get("ssl_verify", True)
     endpoint = config["fts"]["endpoint"]
 
-    fts_session = fts_client_mod.build_session(
-        config["tokens"]["fts_submit"], ssl_verify,
-    )
+    fts_session = fts_client_mod.build_role_session(config, "fts_submit")
     fts_client = fts_client_mod.FTSClient(endpoint, fts_session)
+    auth_cfg = config.get("auth") or {}
+    x509_mode = auth_cfg.get("mode") == "x509"
 
     run_id = config.get("run", {}).get("run_id") or generate_run_id()
 
     # -----------------------------------------------------------------------
     # Step 1: Token validation
     # -----------------------------------------------------------------------
-    try:
+    if x509_mode:
+        min_lifetime_s = auth_cfg["x509_min_lifetime_s"]
+        x509_auth.check_proxy_lifetime(auth_cfg["x509_proxy"], min_lifetime_s)
+        # Fatal in x509 mode: delegation_id is needed for the delegation check.
         whoami = fts_client.get("/whoami")
-        logger.debug("Token identity validated: %s", whoami)
-    except TokenExpiredError:
-        raise
-    except Exception as exc:
-        logger.warning("GET /whoami failed (continuing): %s", exc)
+        logger.debug("Proxy identity validated: %s", whoami)
+        x509_auth.check_delegation(fts_client, whoami, min_lifetime_s)
+    else:
+        try:
+            whoami = fts_client.get("/whoami")
+            logger.debug("Token identity validated: %s", whoami)
+        except TokenExpiredError:
+            raise
+        except Exception as exc:
+            logger.warning("GET /whoami failed (continuing): %s", exc)
 
     # -----------------------------------------------------------------------
     # Step 2: Fetch optimizer state (persisted to disk after run dir exists)
@@ -352,9 +362,7 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
             )
             checksums = supplied_checksums
         else:
-            source_session = fts_client_mod.build_session(
-                config["tokens"]["source_read"], ssl_verify,
-            )
+            source_session = fts_client_mod.build_role_session(config, "source_read")
             checksums = checksum_fetcher.fetch_all(
                 [src for src, dst in mapping], source_session, config
             )
@@ -370,9 +378,7 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
         # -----------------------------------------------------------------------
         cleanup_cfg = config.get("cleanup", {})
         if cleanup_cfg.get("before", False):
-            cleanup_session = fts_client_mod.build_session(
-                config["tokens"]["dest_write"], ssl_verify,
-            )
+            cleanup_session = fts_client_mod.build_role_session(config, "dest_write")
             logger.info("Running pre-cleanup")
             pre_audit = cleanup_manager.cleanup_pre(mapping, cleanup_session, config)
             store.write_cleanup_audit(run_id, "pre", pre_audit, runs_dir=runs_dir)
@@ -522,9 +528,7 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
     # -----------------------------------------------------------------------
     cleanup_cfg = config.get("cleanup", {})
     if cleanup_cfg.get("after", False):
-        cleanup_session = fts_client_mod.build_session(
-            config["tokens"]["dest_write"], ssl_verify,
-        )
+        cleanup_session = fts_client_mod.build_role_session(config, "dest_write")
         logger.info("Running post-cleanup")
         post_audit = cleanup_manager.cleanup_post(file_records, cleanup_session, config)
         store.write_cleanup_audit(run_id, "post", post_audit, runs_dir=runs_dir)
@@ -592,6 +596,13 @@ def main():
         help="Bearer token for destination storage writes (overrides DEST_WRITE_TOKEN env var)",
     )
     parser.add_argument(
+        "--x509-proxy",
+        default=None,
+        metavar="PATH",
+        help="Authenticate all roles with this X.509 VOMS proxy instead of "
+             "bearer tokens (forces auth.mode: x509; overrides X509_USER_PROXY)",
+    )
+    parser.add_argument(
         "--cancel-job",
         metavar="JOB_ID",
         default=None,
@@ -612,13 +623,11 @@ def main():
         fts_submit_token=args.fts_submit_token,
         source_read_token=args.source_read_token,
         dest_write_token=args.dest_write_token,
+        x509_proxy=args.x509_proxy,
     )
 
     if args.cancel_job:
-        ssl_verify = config.get("fts", {}).get("ssl_verify", True)
-        fts_session = fts_client_mod.build_session(
-            config["tokens"]["fts_submit"], ssl_verify,
-        )
+        fts_session = fts_client_mod.build_role_session(config, "fts_submit")
         fts_client = fts_client_mod.FTSClient(config["fts"]["endpoint"], fts_session)
         result = fts_canceller.cancel_jobs([args.cancel_job], fts_client)[0]
         if result["cancelled"]:

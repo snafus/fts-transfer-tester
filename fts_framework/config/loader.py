@@ -36,6 +36,18 @@ Token resolution order (highest wins)
 
 The YAML ``tokens`` section may be omitted entirely if all three roles are
 supplied through environment variables or keyword arguments.
+
+X.509 proxy mode (``auth.mode: x509``)
+--------------------------------------
+All roles authenticate with one VOMS proxy presented as the TLS client
+certificate; no bearer tokens are used anywhere (no mixed mode).  Setting
+``tokens``, a token CLI argument, or ``oidc.enabled`` in this mode is a
+``ConfigError``; token environment variables are ignored with a warning.
+Proxy path priority: ``x509_proxy`` keyword (CLI ``--x509-proxy``, which
+also forces x509 mode) > ``$X509_USER_PROXY`` > ``auth.x509_proxy`` >
+``/tmp/x509up_u<uid>``.  The resolved path is stored back into
+``config["auth"]["x509_proxy"]``.  Delegation to FTS3 is the user's
+responsibility and is checked at campaign start (see ``auth.x509``).
 """
 
 import logging
@@ -47,6 +59,7 @@ import yaml
 from fts_framework.exceptions import ConfigError
 from fts_framework.auth import env_loader as _env_loader
 from fts_framework.auth import oidc as _oidc
+from fts_framework.auth import x509 as _x509
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +78,7 @@ _ENV_TOKEN_ROLES = {
 _ALLOWED_CHECKSUM_ALGORITHMS = ("adler32",)
 _ALLOWED_VERIFY_CHECKSUM = ("both", "source", "target", "none")
 _ALLOWED_DESTINATION_NAMING = ("sequential", "uuid", "date")
+_ALLOWED_AUTH_MODES = ("token", "x509")
 
 # ---------------------------------------------------------------------------
 # Defaults for optional fields only.
@@ -72,6 +86,11 @@ _ALLOWED_DESTINATION_NAMING = ("sequential", "uuid", "date")
 # ---------------------------------------------------------------------------
 
 _DEFAULTS = {
+    "auth": {
+        "mode": "token",
+        "x509_proxy": None,
+        "x509_min_lifetime_s": 3600,
+    },
     "oidc": {
         "enabled": False,
         "env_file": ".env",
@@ -143,8 +162,9 @@ _DICT_SECTIONS = set(_DEFAULTS.keys()) | {"fts", "tokens"}
 # ---------------------------------------------------------------------------
 
 def identify_token_sources(path, token=None, fts_submit_token=None,
-                           source_read_token=None, dest_write_token=None):
-    # type: (str, object, object, object, object) -> dict
+                           source_read_token=None, dest_write_token=None,
+                           x509_proxy=None):
+    # type: (str, object, object, object, object, object) -> dict
     """Return a dict describing where each token role will be sourced from.
 
     Does NOT fetch OIDC tokens — reports 'oidc' as the source if that is
@@ -162,6 +182,13 @@ def identify_token_sources(path, token=None, fts_submit_token=None,
     raw = _read_yaml(path)
     config = _apply_defaults(raw)
     oidc_cfg = config.get("oidc", {})
+
+    if x509_proxy or config["auth"]["mode"] == "x509":
+        proxy = _x509.resolve_proxy_path(
+            cli_path=x509_proxy, yaml_path=config["auth"].get("x509_proxy"),
+        )
+        return {role: "x509 proxy ({})".format(proxy)
+                for role in ("fts_submit", "source_read", "dest_write")}
 
     sources = {}
     for role in ("fts_submit", "source_read", "dest_write"):
@@ -203,8 +230,8 @@ def identify_token_sources(path, token=None, fts_submit_token=None,
 # ---------------------------------------------------------------------------
 
 def load(path, token=None, fts_submit_token=None,
-         source_read_token=None, dest_write_token=None):
-    # type: (str, object, object, object, object) -> dict
+         source_read_token=None, dest_write_token=None, x509_proxy=None):
+    # type: (str, object, object, object, object, object) -> dict
     """Load, validate, and return the framework config from a YAML file.
 
     Applies defaults for all optional fields before validation, so the
@@ -229,6 +256,7 @@ def load(path, token=None, fts_submit_token=None,
         fts_submit_token (str or None): Token for FTS3 job submission.
         source_read_token (str or None): Token for source storage reads.
         dest_write_token (str or None): Token for destination storage writes.
+        x509_proxy (str or None): X.509 proxy path; forces ``auth.mode: x509``.
 
     Returns:
         dict: Fully populated and validated config dict.
@@ -241,6 +269,22 @@ def load(path, token=None, fts_submit_token=None,
 
     raw = _read_yaml(path)
     _check_section_types(raw)
+
+    if x509_proxy:
+        raw["auth"] = dict(raw.get("auth") or {}, mode="x509")
+    if (raw.get("auth") or {}).get("mode") == "x509":
+        cli_tokens = (token, fts_submit_token, source_read_token, dest_write_token)
+        config = _load_x509(raw, x509_proxy, any(cli_tokens))
+        logger.info(
+            "Config loaded — endpoint=%s ssl_verify=%s test_label=%s chunk_size=%d "
+            "auth=x509 proxy=%s",
+            config["fts"]["endpoint"],
+            config["fts"]["ssl_verify"],
+            config["run"]["test_label"],
+            config["transfer"]["chunk_size"],
+            config["auth"]["x509_proxy"],
+        )
+        return config
 
     # Build resolved token map: YAML < shared-env < per-role-env < shared-CLI < per-role-CLI
     resolved = {}
@@ -295,6 +339,47 @@ def load(path, token=None, fts_submit_token=None,
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _load_x509(raw, cli_proxy, cli_tokens_given):
+    # type: (dict, object, bool) -> dict
+    """Build and validate the config for ``auth.mode: x509``.
+
+    Raises:
+        ConfigError: If any token source other than environment variables
+            is configured, if OIDC is enabled, or if the proxy file is
+            missing or malformed.
+    """
+    if cli_tokens_given:
+        raise ConfigError(
+            "auth.mode is x509: bearer token CLI arguments cannot be combined "
+            "with X.509 proxy authentication"
+        )
+    if any((raw.get("tokens") or {}).values()):
+        raise ConfigError(
+            "auth.mode is x509: remove the 'tokens' section (mixed token/proxy "
+            "authentication is not supported)"
+        )
+    if (raw.get("oidc") or {}).get("enabled"):
+        raise ConfigError(
+            "auth.mode is x509: oidc.enabled must be false"
+        )
+    env_tokens = [v for v in [_ENV_TOKEN_SHARED] + sorted(_ENV_TOKEN_ROLES.values())
+                  if os.environ.get(v)]
+    if env_tokens:
+        logger.warning(
+            "auth.mode is x509: ignoring token environment variable(s) %s",
+            ", ".join(env_tokens),
+        )
+
+    config = _apply_defaults(raw)
+    config["tokens"] = {}
+    auth_cfg = config["auth"]
+    auth_cfg["x509_proxy"] = _x509.resolve_proxy_path(
+        cli_path=cli_proxy, yaml_path=auth_cfg.get("x509_proxy"),
+    )
+    _validate(config)
+    return config
+
 
 def _read_yaml(path):
     # type: (str) -> dict
@@ -498,8 +583,12 @@ def _validate(config):
     """
     _validate_run(config)
     _validate_fts(config)
-    _validate_oidc(config)
-    _validate_tokens(config)
+    _validate_auth(config)
+    if config["auth"]["mode"] == "x509":
+        _x509.validate_proxy_file(config["auth"]["x509_proxy"])
+    else:
+        _validate_oidc(config)
+        _validate_tokens(config)
     _validate_transfer(config)
     _validate_concurrency(config)
     _validate_submission(config)
@@ -588,6 +677,18 @@ def _validate_fts(config):
             raise ConfigError(
                 "fts.ssl_verify CA bundle path does not exist: {!r}".format(ssl_verify)
             )
+
+
+def _validate_auth(config):
+    # type: (dict) -> None
+    mode = config["auth"]["mode"]
+    if mode not in _ALLOWED_AUTH_MODES:
+        raise ConfigError(
+            "auth.mode must be one of {}, got: {!r}".format(_ALLOWED_AUTH_MODES, mode)
+        )
+    _require_int(
+        config["auth"]["x509_min_lifetime_s"], "auth.x509_min_lifetime_s", min_val=0,
+    )
 
 
 def _validate_oidc(config):
