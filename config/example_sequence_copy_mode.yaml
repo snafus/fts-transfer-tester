@@ -1,0 +1,26 @@
+---
+# FTS3 Test Framework — Push vs Pull comparison sequence
+#
+# Runs the baseline campaign once per HTTP-TPC copy mode, repeated `trials`
+# times. transfer.copy_mode is appended as ?copy_mode=<mode> to every
+# destination URL; gfal2 then uses exactly that mode (no fallback).
+# Results: sequences/<id>/reports/summary.{csv,md}, column param_transfer.copy_mode.
+#
+# Total runs = 2 modes x 3 trials = 6 (sequential).
+
+baseline_config: "config/my_campaign.yaml"
+
+sequence:
+  trials: 3
+  label: "push_vs_pull"
+  sweep:
+    parameters:
+      transfer.copy_mode: [pull, push]
+
+# Pull and push against several destinations (cartesian: 2 x 3 = 6 cases):
+#
+#      transfer.copy_mode: [pull, push]
+#      transfer.dst_prefix:
+#        - "davs://dst-a.example.org:1094/data/tests/"
+#        - "https://dst-b.example.org:8443/data/tests/"
+#        - "https://dst-c.example.org:443/data/tests/"

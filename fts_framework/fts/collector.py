@@ -31,6 +31,7 @@ import logging
 import requests as req_lib
 
 from fts_framework.exceptions import TokenExpiredError
+from fts_framework.fts import copy_mode as _copy_mode
 from fts_framework.persistence import store
 
 logger = logging.getLogger(__name__)
@@ -173,6 +174,9 @@ def _normalise_file_record(item, job_id, chunk_index, retry_round):
     Returns:
         dict: Normalised ``FileRecord``.
     """
+    # FTS3 echoes the ?copy_mode= opaque data in dest_surl; keep the clean URL
+    # for internal use and record the echoed mode separately.
+    dest_surl, echoed_copy_mode = _copy_mode.split(item.get("dest_surl", ""))
     return {
         # Identity
         "job_id": job_id,
@@ -182,7 +186,8 @@ def _normalise_file_record(item, job_id, chunk_index, retry_round):
 
         # Transfer addresses
         "source_surl": item.get("source_surl", ""),
-        "dest_surl": item.get("dest_surl", ""),
+        "dest_surl": dest_surl,
+        "copy_mode": echoed_copy_mode,
 
         # State
         "file_state": item.get("file_state", ""),

@@ -180,11 +180,28 @@ def compute(file_records, retry_records, config, run_id):
 
     max_files = config.get("transfer", {}).get("max_files")
 
+    # --- Step 9: copy-mode echo check ---
+    # FTS3 does not report the TPC mode actually used; the strongest REST
+    # evidence is that it kept the requested ?copy_mode= on every dest_surl.
+    copy_mode_requested = config.get("transfer", {}).get("copy_mode")
+    copy_mode_echoed = sum(
+        1 for f in file_records
+        if copy_mode_requested and f.get("copy_mode") == copy_mode_requested
+    )
+    copy_mode_mismatched = sum(
+        1 for f in file_records if f.get("copy_mode") != copy_mode_requested
+    )
+
     return {
         "run_id": run_id,
         "test_label": test_label,
         "generated_at": _now_iso(),
         "max_files": max_files,
+
+        # HTTP-TPC copy mode (None = server default, pull with fallback)
+        "copy_mode_requested": copy_mode_requested,
+        "copy_mode_echoed_files": copy_mode_echoed,
+        "copy_mode_mismatched_files": copy_mode_mismatched,
 
         # Counts
         "total_files": total,

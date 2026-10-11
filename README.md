@@ -15,6 +15,7 @@ Production-grade, automation-first FTS3 transfer benchmarking framework written 
   - [OIDC Token Generation](#oidc-token-generation)
   - [X.509 Proxy Authentication](#x509-proxy-authentication)
   - [Multi-Destination Transfers](#multi-destination-transfers)
+  - [Push vs Pull (HTTP-TPC Copy Mode)](#push-vs-pull-http-tpc-copy-mode)
 - [CLI Usage](#cli-usage)
 - [Sequence Runner](#sequence-runner)
 - [Programmatic Usage](#programmatic-usage)
@@ -232,6 +233,7 @@ The `tokens` YAML section may be omitted entirely if all three roles are satisfi
 | `activity` | string | `"default"` | FTS3 activity share label |
 | `unmanaged_tokens` | bool | `false` | (Not yet implemented — reserved for future FTS3 unmanaged-token mode.) |
 | `nostreams` | int \| null | `null` | Number of parallel TCP/HTTP streams per file transfer. When `null` (or omitted) the parameter is not sent and the FTS3 optimizer decides. Protocol-dependent: silently ignored by endpoints that do not support it. Must be a whole-number integer ≥ 1 in YAML (use `null` or omit the key to let FTS3 decide — note that `None` with a capital N is a YAML string, not null). |
+| `copy_mode` | string \| null | `null` | HTTP third-party-copy mode: `pull` (destination fetches) or `push` (source sends). `null` leaves the server default (pull, falling back to push). See [Push vs Pull](#push-vs-pull-http-tpc-copy-mode). |
 | `job_metadata` | dict | `{}` | User-supplied key/value pairs merged into `job_metadata`. Framework keys (`run_id`, `chunk_index`, `retry_round`, `test_label`) always take priority. |
 
 ### `concurrency`
@@ -527,6 +529,47 @@ If FTS3 returns 401/403 mid-run, `ProxyExpiredError` is raised (a `TokenExpiredE
 ### No mixed mode
 
 In x509 mode a `tokens` section, any `--*-token` / `--token` flag, or `oidc.enabled: true` is a `ConfigError`. Token environment variables (`FTS_TOKEN`, `FTS_SUBMIT_TOKEN`, ...) are ignored with a warning, since they are often set in the shell incidentally.
+
+---
+
+## Push vs Pull (HTTP-TPC Copy Mode)
+
+`transfer.copy_mode` forces the HTTP third-party-copy direction per campaign, with no FTS3 or gfal2 server configuration change:
+
+| Value | Active party | Effect |
+|---|---|---|
+| `null` (default) | server default | Nothing added. gfal2 tries pull, then push, then streamed (if enabled). The mode actually used is not recorded. |
+| `pull` | destination | Destination storage issues the GET to the source. |
+| `push` | source | Source storage issues the PUT to the destination. |
+
+**Mechanism:** the framework appends `?copy_mode=<mode>` to each destination URL in the job payload. gfal2's HTTP plugin reads it ahead of any server-side default and, because the mode is explicit, **disables its pull→push→streamed fallback**. A `push` campaign therefore transfers by push or fails; it never quietly becomes pull.
+
+**What is verified and reported:**
+
+- The requested mode is recorded in the run config copy, in every job's `job_metadata.copy_mode`, and in the report header.
+- FTS3 echoes the query back in each file's `dest_surl`. The report shows `FTS3 echoed on n/N files`, and warns if any file's echoed mode differs from the request. `files.csv` has a per-file `copy_mode` column.
+- FTS3's REST API does not report the mode a successful transfer actually used. That is inferred from the explicit request plus gfal2's no-fallback behaviour. Per-transfer gfal2 logs (`log_file`) would show it, but are usually not reachable with user credentials.
+
+Internally, normalised file records keep the clean `dest_surl` (query removed), so cleanup DELETEs, framework retries and resume reminting all use the real path. Raw responses under `raw/` keep the URL exactly as FTS3 returned it.
+
+**Comparing push and pull** — sweep it in a sequence; the mode becomes a `param_transfer.copy_mode` column in `summary.csv` / `summary.md`:
+
+```yaml
+baseline_config: "config/my_campaign.yaml"
+sequence:
+  trials: 3
+  label: "push_vs_pull"
+  sweep:
+    parameters:
+      transfer.copy_mode: [pull, push]
+```
+
+See `config/example_sequence_copy_mode.yaml`. Points to check when interpreting results:
+
+- **Credentials differ by mode.** In push the *source* storage writes to the destination, so it needs the destination credential: with tokens FTS3 forwards the destination token to the source; with X.509 the source must support credential delegation. A push failure may be an authorisation difference, not a performance one; check `reason` in `files.csv`.
+- **Per-SE TPC support (FTS3 3.13+)** may be configured as pull-only or push-only on the server. Whether that is applied before gfal2 sees the URL has not been verified; a mode the server disallows will show up as failures.
+- Only HTTP/WebDAV TPC is affected, which is all the framework supports (`https://`, `davs://`).
+- `tools/probe_copy_mode.py CONFIG SOURCE_URL` submits one 1-file job per mode and prints the echoed URL, outcome and reason — a quick check that a storage pair supports both directions before running a sweep.
 
 ---
 
