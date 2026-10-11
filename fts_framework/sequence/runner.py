@@ -368,8 +368,11 @@ def run_sequence(params_file, resume_dir=None, runs_dir=None,
             len(seq_params["cases"]) * seq_params["trials"],
         )
 
-    pending = seq_state.pending_trials(state)
-    logger.info("%d trial(s) pending", len(pending))
+    execution_order = seq_params.get("execution_order", "trial_major")
+    pending = seq_state.pending_trials(state, order=execution_order)
+    logger.info(
+        "%d trial(s) pending (execution order: %s)", len(pending), execution_order,
+    )
 
     if seq_params.get("execution_mode", "sequential") == "parallel_cases":
         _validate_destination_naming_for_parallel(baseline_config, state["cases"])

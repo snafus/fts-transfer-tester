@@ -13,6 +13,8 @@ baseline_config: "config/my_campaign.yaml"
 sequence:
   trials: 3
   label: "push_vs_pull"
+  # Default order is trial_major: pull, push, pull, push, ... so both modes
+  # see the same network conditions over the course of the sequence.
   sweep:
     parameters:
       transfer.copy_mode: [pull, push]

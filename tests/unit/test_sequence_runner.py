@@ -537,7 +537,7 @@ class TestDestinationNamingSweep:
 
 def _install_parallel_mocks(monkeypatch, tmp_path, n_cases, trials, max_workers,
                              run_campaign_fn, destination_naming="uuid",
-                             execution_mode="parallel_cases"):
+                             execution_mode="parallel_cases", execution_order=None):
     """Like _install_mocks, but for multi-case parallel_cases scenarios with
     a configurable transfer.destination_naming (the guardrail this mode
     validates)."""
@@ -549,20 +549,21 @@ def _install_parallel_mocks(monkeypatch, tmp_path, n_cases, trials, max_workers,
         cfg["transfer"]["destination_naming"] = destination_naming
         return cfg
 
+    seq_params = {
+        "baseline_config_path": "config/x.yaml",
+        "label": "test",
+        "output_base_dir": str(tmp_path),
+        "sweep_mode": "cartesian",
+        "trials": trials,
+        "cases": _make_cases(n_cases),
+        "execution_mode": execution_mode,
+        "max_workers": max_workers,
+    }
+    if execution_order is not None:
+        seq_params["execution_order"] = execution_order
+
     monkeypatch.setattr(loader_mod, "load", _load_baseline)
-    monkeypatch.setattr(
-        runner_mod.seq_loader, "load",
-        lambda path: {
-            "baseline_config_path": "config/x.yaml",
-            "label": "test",
-            "output_base_dir": str(tmp_path),
-            "sweep_mode": "cartesian",
-            "trials": trials,
-            "cases": _make_cases(n_cases),
-            "execution_mode": execution_mode,
-            "max_workers": max_workers,
-        },
-    )
+    monkeypatch.setattr(runner_mod.seq_loader, "load", lambda path: seq_params)
     monkeypatch.setattr(runner_mod, "run_campaign", run_campaign_fn)
     monkeypatch.setattr(runner_mod.seq_reporter, "generate_summary",
                         lambda seq_dir, state, runs_dir="runs": None)
