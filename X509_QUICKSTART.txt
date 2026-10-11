@@ -1,0 +1,152 @@
+FTS3 Test Framework - X.509 proxy quick start
+=============================================
+
+Target: Rocky/RHEL/Alma 8 or 9 host with Python 3.6+
+
+
+1. Prerequisites (once per host)
+--------------------------------
+   You need the grid client tools, IGTF CAs and your VO's VOMS config. These
+   come from OS packages, not pip:
+
+     voms-proxy-init     (package: voms-clients-java or voms-clients-cpp)
+     fts-rest-delegate   (package: fts-rest-client)
+     /etc/grid-security/certificates   (IGTF CA bundle, e.g. ca-policy-egi-core)
+     /etc/vomses and /etc/grid-security/vomsdir/<vo>/   (your VO's config)
+
+   Your user certificate in ~/.globus/usercert.pem and ~/.globus/userkey.pem
+   (key permissions 400).
+
+   Check:
+     which voms-proxy-init fts-rest-delegate
+     ls /etc/grid-security/certificates | head
+
+
+2. Get the code
+---------------
+     git clone https://github.com/snafus/fts-transfer-tester.git
+     cd fts-transfer-tester
+
+
+3. Create the virtual environment and install
+---------------------------------------------
+     python3 -m venv .venv
+     source .venv/bin/activate
+     pip install --upgrade "pip==21.3.1"     # only needed on Python 3.6
+     pip install -r requirements.txt
+     pip install -e .
+
+   Check:
+     fts-run --help | grep x509-proxy
+     fts-sequence --help | grep x509-proxy
+
+
+4. Create the campaign config
+-----------------------------
+   Save as config/campaign_x509.yaml (minimal version; see README for all keys):
+
+     run:
+       test_label: "campaign_april_2026"
+     fts:
+       endpoint: "https://fts3-ska.scd.rl.ac.uk:8446"
+       ssl_verify: "/etc/grid-security/certificates"
+     auth:
+       mode: x509
+       x509_min_lifetime_s: 7200
+     transfer:
+       source_pfns_file: "/root/FTS-testing/datasets/uksrc-ral-5TiBx10.txt"
+       dst_prefix: "davs://xrootd-01.swesrc.chalmers.se:1094/data/rse/jwtests/files_5TiB/"
+       verify_checksum: "none"
+       overwrite: true
+       max_files: 5
+       activity: "Data"
+     polling:
+       campaign_timeout_s: 86400
+     cleanup:
+       before: true
+       after: true
+
+   Do NOT add a tokens section and do NOT set oidc.enabled: true. Either one
+   is an error in x509 mode.
+
+
+5. Create the sequence file (optional; only for fts-sequence)
+-------------------------------------------------------------
+   Save as config/sequence_x509.yaml:
+
+     baseline_config: "config/campaign_x509.yaml"
+     sequence:
+       trials: 3
+       label: "x509_dest_sweep"
+       sweep:
+         parameters:
+           transfer.dst_prefix:
+             - "davs://xrootd-01.swesrc.chalmers.se:1094/data/rse/jwtests/files_5TiB/"
+             - "https://xrootd.aussrc.org:8443/data/jwtests/files_5TiB/"
+             - "https://xrootd.ska.zverse.space:443/data/jwtests/files_5TiB/"
+
+   The baseline_config path is relative to the directory you run from
+   (the repo root here).
+
+
+6. Create the proxy and delegate it to FTS3 (before every run)
+---------------------------------------------------------------
+     voms-proxy-init --voms <your-vo> --valid 48:00
+     voms-proxy-info --all          # check VO attributes and time left
+
+     fts-rest-delegate -s https://fts3-ska.scd.rl.ac.uk:8446 --hours 48
+
+   The proxy is written to /tmp/x509up_u<uid> unless X509_USER_PROXY is set.
+   The framework finds it there automatically. To use another file:
+     export X509_USER_PROXY=/path/to/proxy      (or pass --x509-proxy PATH)
+
+   The VO server may cap the attribute lifetime below what you request;
+   voms-proxy-info shows the real value. Delegate with the same proxy.
+
+
+7. Pre-flight check (sequence only)
+-----------------------------------
+     fts-sequence --check-tokens config/sequence_x509.yaml
+
+   This checks the proxy file and its expiry. FTS3 delegation is checked
+   automatically when each run starts.
+
+
+8. Run
+------
+   Single campaign:
+     fts-run config/campaign_x509.yaml
+
+   Sequence:
+     fts-sequence config/sequence_x509.yaml
+
+   Output goes to runs/<run_id>/ (fts-run) or sequences/<id>/ (fts-sequence).
+   Reports are in the reports/ subdirectory of each run.
+
+
+9. If something fails
+---------------------
+   "X.509 proxy file not found"
+       Run step 6, or set X509_USER_PROXY / --x509-proxy to the right path.
+
+   "has an encrypted private key, so it is not a proxy"
+       You pointed at usercert/userkey instead of a proxy. Run voms-proxy-init.
+
+   "Local X.509 proxy ... below auth.x509_min_lifetime_s"
+       Proxy is about to expire. Re-run voms-proxy-init.
+
+   "No delegated credential on FTS3" or "Delegated credential ... remaining"
+       Re-run: fts-rest-delegate -f -s <endpoint> --hours 48
+
+   "ProxyExpiredError" during a run
+       Renew (step 6, with -f on fts-rest-delegate), then resume:
+         fts-run: set run.run_id in the config to the failed run_id, run again
+         fts-sequence: fts-sequence --rerun-failed sequences/<id>/
+       Set X509_USER_PROXY or --x509-proxy again when resuming.
+
+   "auth.mode is x509: ..." config errors
+       Remove the tokens section, any --token flags, and set oidc.enabled: false.
+
+   SSL / certificate verify errors
+       Check fts.ssl_verify points at /etc/grid-security/certificates and the
+       IGTF CA package is installed.
