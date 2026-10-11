@@ -7,6 +7,8 @@ echoed query on harvest, resume reminting, cleanup URLs, the metrics echo
 check, and report rendering.
 """
 
+import logging
+
 import pytest
 import yaml
 
@@ -274,3 +276,25 @@ class TestReports:
         row = lines[1].split(",")
         assert row[header.index("copy_mode")] == "push"
         assert row[header.index("dest_surl")] == DST
+
+
+# ---------------------------------------------------------------------------
+# Campaign start log line
+# ---------------------------------------------------------------------------
+
+class TestCampaignLog:
+    @pytest.mark.parametrize("mode,expected", [
+        ("push", "HTTP-TPC copy_mode: push"),
+        ("pull", "HTTP-TPC copy_mode: pull"),
+        (None, "HTTP-TPC copy_mode: server default (pull, fallback to push)"),
+    ])
+    def test_mode_logged_at_campaign_start(self, monkeypatch, tmp_path, caplog,
+                                           mode, expected):
+        from fts_framework.runner import run_campaign
+        from tests.unit import test_runner
+        test_runner._install_run_campaign_mocks(monkeypatch, tmp_path)
+        config = test_runner._base_config()
+        config["transfer"]["copy_mode"] = mode
+        with caplog.at_level(logging.INFO, logger="fts_framework.runner"):
+            run_campaign(config, runs_dir=str(tmp_path))
+        assert expected in caplog.text
