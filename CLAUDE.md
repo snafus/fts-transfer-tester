@@ -153,6 +153,7 @@ there are 100% deterministic, so this is opt-in, not automatic. See
 | `activity` | Configurable per campaign; top-level FTS3 param, not inside job_metadata |
 | `priority` | Configurable per campaign (1–5, default 3); top-level FTS3 param |
 | Tape/staging | No tape support; do not add tape logic without explicit instruction |
+| Sequence execution mode | Default `sequential` (case-major, one trial at a time). Opt-in `sequence.execution.mode: parallel_cases` runs distinct cases concurrently (`max_workers` at a time) while keeping trials within one case strictly sequential. Requires every case to resolve to `destination_naming: uuid` or `date` — concurrent cases sharing a destination prefix would otherwise plan colliding `sequential` destinations; validated up front, raises `ConfigError` before any trial runs. Uses a hand-rolled daemon-thread pool, not `concurrent.futures.ThreadPoolExecutor` (whose non-daemon workers would block process exit on Ctrl-C until in-flight campaigns finish) — see `sequence.runner._run_parallel_cases` |
 
 ---
 

@@ -23,6 +23,10 @@ Sequence parameter file format (YAML)::
       output:
         base_dir: "sequences"      # where sequence state/reports are written
 
+      execution:
+        mode: sequential          # sequential (default) | parallel_cases
+        max_workers: 4            # only used by parallel_cases
+
 Parameter keys must use dot-notation matching the baseline config structure
 (e.g. ``transfer.max_files``).  A scalar value is treated as a single-element
 list.
@@ -30,6 +34,11 @@ list.
 Cartesian mode (default):  generates the full cross-product of all parameter
 lists.  Zip mode: pairs elements positionally; all lists must have equal
 length.
+
+Execution mode ``parallel_cases`` runs different cases concurrently (up to
+``max_workers`` at a time) while still running each case's own trials one
+after another; see ``sequence.runner`` for the execution model and its
+``transfer.destination_naming`` requirement.
 """
 
 import itertools
@@ -276,6 +285,25 @@ def load(path):
     if not isinstance(output_base_dir, str):
         raise ConfigError("sequence.output.base_dir must be a string")
 
+    # execution
+    execution = seq.get("execution", {})
+    if not isinstance(execution, dict):
+        raise ConfigError("sequence.execution must be a YAML mapping")
+
+    execution_mode = execution.get("mode", "sequential")
+    if execution_mode not in ("sequential", "parallel_cases"):
+        raise ConfigError(
+            "sequence.execution.mode must be 'sequential' or "
+            "'parallel_cases'; got: '{}'".format(execution_mode)
+        )
+
+    max_workers = execution.get("max_workers", 4)
+    if not isinstance(max_workers, int) or isinstance(max_workers, bool) or max_workers < 1:
+        raise ConfigError(
+            "sequence.execution.max_workers must be an integer >= 1; "
+            "got: {!r}".format(max_workers)
+        )
+
     return {
         "baseline_config_path": baseline_config_path,
         "trials": trials,
@@ -283,4 +311,6 @@ def load(path):
         "sweep_mode": sweep_mode,
         "cases": cases,
         "output_base_dir": output_base_dir,
+        "execution_mode": execution_mode,
+        "max_workers": max_workers,
     }

@@ -608,6 +608,10 @@ sequence:
 
   output:
     base_dir: "sequences"
+
+  execution:
+    mode: sequential   # sequential (default) | parallel_cases
+    max_workers: 4     # only used by parallel_cases
 ```
 
 **Sweep modes:**
@@ -615,6 +619,12 @@ sequence:
 - `zip` — elements paired positionally; all lists must have equal length. Useful when parameters are logically coupled (e.g. file count + matching source file).
 
 **Parameter keys** use dot-notation matching the baseline config structure (e.g. `transfer.max_files`, `transfer.source_pfns_file`).  Any scalar value in the baseline config can be overridden.
+
+**Execution modes:**
+- `sequential` (default) — every `(case, trial)` pair runs one at a time, in case order. Byte-for-byte the original behavior.
+- `parallel_cases` — different **cases** run concurrently (up to `max_workers` at a time), but each case's own **trials** still run one after another, never overlapping with each other. Requires every case to resolve to `transfer.destination_naming: uuid` or `date` (the config-loader default, `sequential`, is rejected up front with a `ConfigError`) — concurrently-running cases that share a destination prefix would otherwise plan colliding destination paths, since `sequential` naming always starts again from `testfile_000000`. Ctrl-C abandons in-flight trials immediately (they're left `running` and resumed the same way a single interrupted trial is resumed today); it does not wait for in-flight campaigns to finish.
+
+  500-recovery (see [Campaign Resumption](#campaign-resumption)) needs no special handling under `parallel_cases`: each case's campaign builds its own `FTSClient`/session and has a globally unique `run_id` (`c{case:02d}_t{trial:02d}_...`), and the recovery scan's matching key (`run_id`, `chunk_index`, `retry_round`) is unique across every concurrently-running case — even though a `GET /jobs` scan can return jobs belonging to other cases mixed in, `_match_jobs` only ever matches the calling case's own triple. As a side effect, a 500 in one case (up to ~80s of scan/backoff) no longer stalls the whole sequence the way it does in `sequential` mode — other cases keep running.
 
 ### Output layout
 
@@ -892,6 +902,8 @@ This closes a specific race: the framework's 500-recovery and crash-resume scans
 
 Framework retries additionally disambiguate duplicate source PFNs (e.g. from `max_files` sampling padding, where one source PFN can appear more than once with a distinct destination each): only the occurrence that actually failed is reminted and resubmitted, not sibling occurrences of the same source that already succeeded.
 
+`uuid`/`date` naming is also a hard requirement for [`sequence.execution.mode: parallel_cases`](#sequence-runner): concurrently-running cases that share a destination prefix would otherwise both plan `sequential` destinations starting from `testfile_000000`, colliding in the same way a resume race does — the sequence runner rejects `sequential` naming up front in that mode.
+
 ---
 
 ## Framework Retry
@@ -1049,7 +1061,7 @@ Integration tests require a live FTS3 endpoint:
 FTS_INTEGRATION_ENDPOINT=https://fts.example.org:8446 pytest tests/integration/ -v
 ```
 
-**952 unit tests** cover all modules: config loader (including OIDC resolution and scope templates), auth env loader, OIDC token fetch, inventory, destination planner (single and weighted multi-destination), checksum fetcher, FTS client, submission (including 500-recovery and per-file token forwarding), poller, collector, persistence, resume controller, metrics engine, cleanup manager, reporting renderer, runner orchestration, and sequence runner (loader, state, reporter, per-trial OIDC refresh).
+**1019 unit tests** cover all modules: config loader (including OIDC resolution and scope templates), auth env loader, OIDC token fetch, inventory, destination planner (single and weighted multi-destination), checksum fetcher, FTS client, submission (including 500-recovery, its behavior under concurrently-submitting cases, and per-file token forwarding), poller, collector, persistence, resume controller, metrics engine, cleanup manager, reporting renderer, runner orchestration, and sequence runner (loader, state, reporter, per-trial OIDC refresh, parallel_cases execution).
 
 ---
 
