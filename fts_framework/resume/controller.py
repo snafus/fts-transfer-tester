@@ -45,6 +45,7 @@ import uuid
 from datetime import datetime
 
 from fts_framework.destination import planner as dest_planner
+from fts_framework.fts import copy_mode as _copy_mode
 from fts_framework.exceptions import SubmissionError, TokenExpiredError
 from fts_framework.persistence import store
 
@@ -264,6 +265,14 @@ def _recover_or_submit(fts_client, config, run_id, chunk_index, retry_round,
     )
 
 
+def _remint_keeping_copy_mode(dest):
+    # type: (str) -> str
+    """Remint *dest*, carrying any ``?copy_mode=`` opaque data across."""
+    clean, mode = _copy_mode.split(dest)
+    new_dest = dest_planner.remint(clean)
+    return _copy_mode.add(new_dest, mode) if mode else new_dest
+
+
 def _remint_payload(payload):
     # type: (dict) -> dict
     """Return a deep copy of *payload* with every file's destination reminted.
@@ -277,7 +286,7 @@ def _remint_payload(payload):
     mutated = copy.deepcopy(payload)
     for entry in mutated.get("files", []):
         dests = entry.get("destinations") or []
-        entry["destinations"] = [dest_planner.remint(d) for d in dests]
+        entry["destinations"] = [_remint_keeping_copy_mode(d) for d in dests]
     return mutated
 
 

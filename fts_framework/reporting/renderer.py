@@ -125,6 +125,9 @@ def render_console(snapshot, config):
     _add(" Endpoint : {}".format(
         config.get("fts", {}).get("endpoint", "<unknown>")
     ))
+    _add(" Copy mode: {}".format(_copy_mode_summary(snapshot)))
+    if snapshot.get("copy_mode_mismatched_files"):
+        _add("  *** WARNING: {} ***".format(_copy_mode_mismatch_warning(snapshot)))
     _add(_SEP)
 
     max_files = snapshot.get("max_files")
@@ -243,10 +246,19 @@ def render_markdown(snapshot, config, subjobs=None):
     _add("| SSL verify | {} |".format(
         "DISABLED" if snapshot.get("ssl_verify_disabled") else "ENABLED"
     ))
+    _add("| Copy mode | {} |".format(_copy_mode_summary(snapshot)))
     max_files = snapshot.get("max_files")
     if max_files is not None:
         _add("| Max files (limit) | {} |".format(max_files))
     _add("")
+    if snapshot.get("copy_mode_mismatched_files"):
+        _add("> **WARNING:** {}".format(_copy_mode_mismatch_warning(snapshot)))
+        _add("")
+    if snapshot.get("copy_mode_requested"):
+        _add("> Copy mode is requested via `?copy_mode=` on the destination URL, "
+             "which disables gfal2's pull/push fallback. FTS3 does not report the "
+             "mode actually used; the echo count confirms FTS3 kept the request.")
+        _add("")
 
     # 2. Transfer outcomes
     sr = snapshot.get("success_rate", 0.0)
@@ -494,6 +506,7 @@ _CSV_COLUMNS = [
     ("file_state",       "file_state"),
     ("source_surl",      "source_surl"),
     ("dest_surl",        "dest_surl"),
+    ("copy_mode",        "copy_mode"),
     ("filesize",         "filesize"),
     ("throughput",       "throughput"),
     ("throughput_wire",  "throughput_wire"),
@@ -588,6 +601,29 @@ def render_timeseries_csv(timeseries):
 # ---------------------------------------------------------------------------
 # Formatting helpers
 # ---------------------------------------------------------------------------
+
+def _copy_mode_summary(snapshot):
+    # type: (dict) -> str
+    requested = snapshot.get("copy_mode_requested")
+    if not requested:
+        return "server default (pull, fallback to push)"
+    return "{} (requested; FTS3 echoed on {}/{} files)".format(
+        requested,
+        snapshot.get("copy_mode_echoed_files", 0),
+        snapshot.get("total_files", 0),
+    )
+
+
+def _copy_mode_mismatch_warning(snapshot):
+    # type: (dict) -> str
+    return (
+        "{} file(s) have a dest_surl copy_mode that differs from the requested "
+        "value ({}); see the copy_mode column in files.csv".format(
+            snapshot.get("copy_mode_mismatched_files", 0),
+            snapshot.get("copy_mode_requested") or "none",
+        )
+    )
+
 
 def _fmt_duration(seconds):
     # type: (object) -> str

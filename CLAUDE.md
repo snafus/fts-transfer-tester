@@ -147,6 +147,7 @@ there are 100% deterministic, so this is opt-in, not automatic. See
 | Token refresh | Delegated to FTS3 server; framework has no refresh logic |
 | Token model | Role-keyed: `fts_submit`, `source_read`, `dest_write`; same value permitted |
 | X.509 auth | Opt-in `auth.mode: x509`: one VOMS proxy (`session.cert`) for every role; all-cert or all-token, never mixed (tokens/OIDC in x509 mode → `ConfigError`). Proxy creation and FTS3 delegation are done externally by the user; framework only checks local proxy and `GET /delegation/{id}` lifetimes at campaign start (`auth/x509.py`). No native delegation, no `cryptography` dependency |
+| HTTP-TPC copy mode | Opt-in `transfer.copy_mode: pull \| push` (default null = server default). Appended as `?copy_mode=` to the **destination** URL at payload build only (`fts/copy_mode.py`); gfal2 then disables its TPC fallback. FTS3 echoes it in `dest_surl`; the collector strips it so normalised records hold the clean URL (cleanup, retry matching, remint) and records the echoed mode in `copy_mode`. Verification is echo-only: REST does not report the mode used |
 | Framework retry | Default off; opt-in via `framework_retry_max > 0` |
 | run_id | Framework-generated `{timestamp}_{short_uuid}` |
 | 500 recovery scan window | Configurable `scan_window_s`, default 300s (5 min) |

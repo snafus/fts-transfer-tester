@@ -277,6 +277,11 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
     x509_mode = auth_cfg.get("mode") == "x509"
 
     run_id = config.get("run", {}).get("run_id") or generate_run_id()
+    logger.info(
+        "HTTP-TPC copy_mode: %s",
+        config.get("transfer", {}).get("copy_mode")
+        or "server default (pull, fallback to push)",
+    )
 
     # -----------------------------------------------------------------------
     # Step 1: Token validation

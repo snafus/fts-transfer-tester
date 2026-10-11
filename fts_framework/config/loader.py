@@ -60,6 +60,7 @@ from fts_framework.exceptions import ConfigError
 from fts_framework.auth import env_loader as _env_loader
 from fts_framework.auth import oidc as _oidc
 from fts_framework.auth import x509 as _x509
+from fts_framework.fts.copy_mode import ALLOWED_COPY_MODES as _ALLOWED_COPY_MODES
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,7 @@ _DEFAULTS = {
         "source_prefix": None,
         "destinations": None,
         "nostreams": None,
+        "copy_mode": None,
     },
     "concurrency": {
         "want_digest_workers": 8,
@@ -846,6 +848,14 @@ def _validate_transfer(config):
     nostreams = config["transfer"]["nostreams"]
     if nostreams is not None:
         _require_int(nostreams, "transfer.nostreams", min_val=1)
+
+    copy_mode = config["transfer"]["copy_mode"]
+    if copy_mode is not None and copy_mode not in _ALLOWED_COPY_MODES:
+        raise ConfigError(
+            "transfer.copy_mode must be null or one of {}, got: {!r}".format(
+                _ALLOWED_COPY_MODES, copy_mode
+            )
+        )
 
 def _validate_concurrency(config):
     # type: (dict) -> None

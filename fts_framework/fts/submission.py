@@ -32,14 +32,15 @@ import json
 import logging
 import time
 
-from fts_framework.exceptions import SubmissionError
+from fts_framework.exceptions import ConfigError, SubmissionError
+from fts_framework.fts import copy_mode as _copy_mode
 
 logger = logging.getLogger(__name__)
 
 # Framework metadata keys reserved in job_metadata.  User-supplied
 # job_metadata keys must not collide with these.
 _FRAMEWORK_METADATA_KEYS = frozenset([
-    "run_id", "chunk_index", "retry_round", "test_label", "activity",
+    "run_id", "chunk_index", "retry_round", "test_label", "activity", "copy_mode",
 ])
 
 # Seconds to wait after a 500 before scanning for the job.
@@ -113,11 +114,21 @@ def build_payload(chunk_mapping, checksums, config, run_id, chunk_index, retry_r
     source_token = config["tokens"].get("source_read")
     dest_token   = config["tokens"].get("dest_write")
 
+    # Re-checked here: sequence sweep overrides are applied after config
+    # validation, so a swept value has not been through the loader.
+    copy_mode = transfer_cfg.get("copy_mode")
+    if copy_mode is not None and copy_mode not in _copy_mode.ALLOWED_COPY_MODES:
+        raise ConfigError(
+            "transfer.copy_mode must be null or one of {}, got: {!r}".format(
+                _copy_mode.ALLOWED_COPY_MODES, copy_mode
+            )
+        )
+
     files = []
     for src, dst in chunk_mapping:
         entry = {
             "sources": [src],
-            "destinations": [dst],
+            "destinations": [_copy_mode.add(dst, copy_mode) if copy_mode else dst],
             "file_metadata": file_meta,
         }
         if checksum_algo == "adler32" and src in checksums:
@@ -214,6 +225,9 @@ def _build_job_metadata(config, run_id, chunk_index, retry_round, activity=None)
     metadata["retry_round"] = retry_round
     metadata["test_label"] = config["run"]["test_label"]
     metadata["activity"] = activity or "default"
+    copy_mode = config["transfer"].get("copy_mode")
+    if copy_mode:
+        metadata["copy_mode"] = copy_mode
 
     return metadata
 
