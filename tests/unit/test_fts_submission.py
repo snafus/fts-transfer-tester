@@ -6,6 +6,8 @@ returns pre-configured responses, avoiding the need for ``responses`` mocking
 at the HTTP layer (submission logic is what's under test, not HTTP mechanics).
 """
 
+import threading
+
 import pytest
 
 from fts_framework.fts.submission import (
@@ -622,5 +624,122 @@ class TestSubmitWith500Recovery:
         job_id = submit_with_500_recovery(client, {}, _config(), RUN_ID, 0, 0)
         assert job_id == "job-late"
         assert len(client.get_calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# 500-recovery under sequence.execution.mode=parallel_cases
+# ---------------------------------------------------------------------------
+#
+# Each case-worker thread builds its own FTSClient/session (see
+# sequence/runner.py -> runner.run_campaign) and has a globally unique run_id
+# (c{case:02d}_t{trial:02d}_...), so submit_with_500_recovery needs no
+# locking of its own. The only thing shared across concurrently-running
+# cases is the FTS3 server itself: a GET /jobs scan issued by one case can
+# come back with jobs belonging to *other* cases mixed in. Correctness
+# depends entirely on _match_jobs disambiguating by the
+# (run_id, chunk_index, retry_round) triple. These tests exercise that with
+# real concurrent threads against a client whose GET /jobs deliberately
+# returns a shared pool containing both cases' jobs.
+
+class _SharedPoolFakeClient(object):
+    """Every POST returns 500; every GET returns the same shared job pool
+    (simulating a real FTS3 GET /jobs response containing jobs from
+    multiple concurrently-submitting cases)."""
+
+    def __init__(self, shared_jobs):
+        self._shared_jobs = shared_jobs
+
+    def post(self, path, payload, **kwargs):
+        return _FakeResponse(500, "internal error")
+
+    def get(self, path, **kwargs):
+        return list(self._shared_jobs)
+
+
+class TestConcurrentRecoveryAcrossCases:
+    def test_two_cases_recover_their_own_job_id_not_each_others(self, monkeypatch):
+        import fts_framework.fts.submission as sub_mod
+        monkeypatch.setattr(sub_mod.time, "sleep", lambda s: None)
+
+        run_id_a = "c00_t00_20260101_aaaaaaaa"
+        run_id_b = "c01_t00_20260101_bbbbbbbb"
+
+        # Both cases' jobs are visible in the same GET /jobs response, as
+        # they would be on a real FTS3 server serving concurrent submitters.
+        shared_jobs = [
+            {
+                "job_id": "job-for-a",
+                "submit_time": "2026-01-01T00:00:00",
+                "job_metadata": {"run_id": run_id_a, "chunk_index": 0, "retry_round": 0},
+            },
+            {
+                "job_id": "job-for-b",
+                "submit_time": "2026-01-01T00:00:00",
+                "job_metadata": {"run_id": run_id_b, "chunk_index": 0, "retry_round": 0},
+            },
+        ]
+        client = _SharedPoolFakeClient(shared_jobs)
+
+        results = {}
+        errors = []
+
+        def _run(run_id, key):
+            try:
+                results[key] = submit_with_500_recovery(
+                    client, {}, _config(), run_id, 0, 0,
+                )
+            except Exception as exc:  # pragma: no cover - failure path only
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=_run, args=(run_id_a, "a")),
+            threading.Thread(target=_run, args=(run_id_b, "b")),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == []
+        assert results["a"] == "job-for-a"
+        assert results["b"] == "job-for-b"
+
+    def test_many_concurrent_cases_each_recover_correctly(self, monkeypatch):
+        """Stress version with more threads to make cross-talk more likely
+        to surface if the matching logic were ever not thread-independent."""
+        import fts_framework.fts.submission as sub_mod
+        monkeypatch.setattr(sub_mod.time, "sleep", lambda s: None)
+
+        n = 12
+        run_ids = ["c{:02d}_t00_20260101_{:08x}".format(i, i) for i in range(n)]
+        shared_jobs = [
+            {
+                "job_id": "job-{}".format(i),
+                "submit_time": "2026-01-01T00:00:00",
+                "job_metadata": {"run_id": rid, "chunk_index": 0, "retry_round": 0},
+            }
+            for i, rid in enumerate(run_ids)
+        ]
+        client = _SharedPoolFakeClient(shared_jobs)
+
+        results = {}
+        lock = threading.Lock()
+
+        def _run(index, run_id):
+            job_id = submit_with_500_recovery(client, {}, _config(), run_id, 0, 0)
+            with lock:
+                results[index] = job_id
+
+        threads = [
+            threading.Thread(target=_run, args=(i, rid))
+            for i, rid in enumerate(run_ids)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        for i in range(n):
+            assert results[i] == "job-{}".format(i)
 
 

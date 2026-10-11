@@ -23,6 +23,12 @@ Sequence parameter file format (YAML)::
       output:
         base_dir: "sequences"      # where sequence state/reports are written
 
+      execution:
+        mode: sequential          # sequential (default) | parallel_cases
+        order: trial_major        # sequential mode: trial_major (default) | case_major
+                                  # parallel_cases: case_major only (the default there)
+        max_workers: 4            # only used by parallel_cases
+
 Parameter keys must use dot-notation matching the baseline config structure
 (e.g. ``transfer.max_files``).  A scalar value is treated as a single-element
 list.
@@ -30,6 +36,23 @@ list.
 Cartesian mode (default):  generates the full cross-product of all parameter
 lists.  Zip mode: pairs elements positionally; all lists must have equal
 length.
+
+Execution mode ``parallel_cases`` runs different cases concurrently (up to
+``max_workers`` at a time) while still running each case's own trials one
+after another; see ``sequence.runner`` for the execution model and its
+``transfer.destination_naming`` requirement.
+
+Execution order (``sequential`` mode only) controls which trial runs next:
+
+* ``trial_major`` (default): one round of every case, then the next round —
+  ``c0t0 c1t0 c2t0, c0t1 c1t1 c2t1, ...``.  Spreads time-dependent effects
+  (network load, time of day, optimizer state) across all cases.
+* ``case_major``: all trials of a case, then the next case —
+  ``c0t0 c0t1 c0t2, c1t0 ...`` (the behaviour before ``order`` existed).
+
+``parallel_cases`` is inherently case-major (each worker runs one case's
+trials in order); it defaults to ``case_major`` and rejects an explicit
+``order: trial_major`` with ``ConfigError``.
 """
 
 import itertools
@@ -38,6 +61,8 @@ import os
 import yaml
 
 from fts_framework.exceptions import ConfigError
+
+_EXECUTION_ORDERS = ("trial_major", "case_major")
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +301,43 @@ def load(path):
     if not isinstance(output_base_dir, str):
         raise ConfigError("sequence.output.base_dir must be a string")
 
+    # execution
+    execution = seq.get("execution", {})
+    if not isinstance(execution, dict):
+        raise ConfigError("sequence.execution must be a YAML mapping")
+
+    execution_mode = execution.get("mode", "sequential")
+    if execution_mode not in ("sequential", "parallel_cases"):
+        raise ConfigError(
+            "sequence.execution.mode must be 'sequential' or "
+            "'parallel_cases'; got: '{}'".format(execution_mode)
+        )
+
+    order = execution.get("order")
+    if order is not None and order not in _EXECUTION_ORDERS:
+        raise ConfigError(
+            "sequence.execution.order must be one of {}; got: {!r}".format(
+                _EXECUTION_ORDERS, order
+            )
+        )
+    if execution_mode == "parallel_cases":
+        if order == "trial_major":
+            raise ConfigError(
+                "sequence.execution.order=trial_major is not supported with "
+                "mode=parallel_cases (each worker runs one case's trials in "
+                "order); omit order or set it to case_major"
+            )
+        order = "case_major"
+    elif order is None:
+        order = "trial_major"
+
+    max_workers = execution.get("max_workers", 4)
+    if not isinstance(max_workers, int) or isinstance(max_workers, bool) or max_workers < 1:
+        raise ConfigError(
+            "sequence.execution.max_workers must be an integer >= 1; "
+            "got: {!r}".format(max_workers)
+        )
+
     return {
         "baseline_config_path": baseline_config_path,
         "trials": trials,
@@ -283,4 +345,7 @@ def load(path):
         "sweep_mode": sweep_mode,
         "cases": cases,
         "output_base_dir": output_base_dir,
+        "execution_mode": execution_mode,
+        "execution_order": order,
+        "max_workers": max_workers,
     }

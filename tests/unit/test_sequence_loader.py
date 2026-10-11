@@ -315,3 +315,67 @@ class TestLoad:
             result = load(pp)
         assert result["sweep_mode"] == "zip"
         assert len(result["cases"]) == 2
+
+
+class TestExecutionMode:
+    def _write_baseline(self, tmp_dir):
+        content = {
+            "fts":      {"endpoint": "https://fts.example.org:8446"},
+            "tokens":   {"fts_submit": "tok", "source_read": "tok",
+                         "dest_write": "tok"},
+            "transfer": {"source_pfns_file": "s.txt",
+                         "dst_prefix": "https://dst.example.org"},
+        }
+        path = os.path.join(tmp_dir, "baseline.yaml")
+        with open(path, "w") as fh:
+            yaml.dump(content, fh)
+        return path
+
+    def _write_params(self, tmp_dir, baseline_path, seq_content):
+        path = os.path.join(tmp_dir, "params.yaml")
+        data = {"baseline_config": baseline_path, "sequence": seq_content}
+        with open(path, "w") as fh:
+            yaml.dump(data, fh)
+        return path
+
+    def test_default_mode_is_sequential(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bp = self._write_baseline(tmp)
+            pp = self._write_params(tmp, bp, {
+                "sweep": {"parameters": {"transfer.max_files": [10]}},
+            })
+            result = load(pp)
+        assert result["execution_mode"] == "sequential"
+        assert result["max_workers"] == 4
+
+    def test_parallel_cases_mode_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bp = self._write_baseline(tmp)
+            pp = self._write_params(tmp, bp, {
+                "sweep": {"parameters": {"transfer.max_files": [10]}},
+                "execution": {"mode": "parallel_cases", "max_workers": 8},
+            })
+            result = load(pp)
+        assert result["execution_mode"] == "parallel_cases"
+        assert result["max_workers"] == 8
+
+    def test_invalid_mode_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bp = self._write_baseline(tmp)
+            pp = self._write_params(tmp, bp, {
+                "sweep": {"parameters": {"transfer.max_files": [10]}},
+                "execution": {"mode": "bogus"},
+            })
+            with pytest.raises(ConfigError, match="execution.mode"):
+                load(pp)
+
+    @pytest.mark.parametrize("bad_value", [0, -1, "4", 2.5, True])
+    def test_invalid_max_workers_raises(self, bad_value):
+        with tempfile.TemporaryDirectory() as tmp:
+            bp = self._write_baseline(tmp)
+            pp = self._write_params(tmp, bp, {
+                "sweep": {"parameters": {"transfer.max_files": [10]}},
+                "execution": {"mode": "parallel_cases", "max_workers": bad_value},
+            })
+            with pytest.raises(ConfigError, match="max_workers"):
+                load(pp)

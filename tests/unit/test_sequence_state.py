@@ -1,7 +1,9 @@
 """Unit tests for fts_framework.sequence.state."""
 
+import json
 import os
 import tempfile
+import threading
 
 import pytest
 
@@ -351,3 +353,40 @@ class TestSkipCasesFrom:
             n = skip_cases_from(tmp, state, from_case_index=0)
         assert n == 4
         assert pending_trials(state) == []
+
+
+class TestConcurrentWrites:
+    """parallel_cases execution mode has multiple case-worker threads
+    calling mark_running/mark_completed concurrently for different cases;
+    _write() must serialize disk writes so state.json is never corrupted."""
+
+    def _fresh(self, tmp_dir, n_cases, trials=1):
+        seq_params = _seq_params()
+        cases = _make_cases(n_cases)
+        return create(tmp_dir, "seq123", seq_params, cases, trials)
+
+    def test_state_json_not_corrupted_under_concurrent_case_writes(self):
+        n_cases = 8
+        with tempfile.TemporaryDirectory() as tmp:
+            state = self._fresh(tmp, n_cases=n_cases, trials=1)
+
+            def _drive_one_case(case_index):
+                run_id = "run-{}".format(case_index)
+                mark_running(tmp, state, case_index, 0, run_id)
+                mark_completed(tmp, state, case_index, 0)
+
+            threads = [
+                threading.Thread(target=_drive_one_case, args=(i,))
+                for i in range(n_cases)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+            with open(os.path.join(tmp, "state.json")) as fh:
+                on_disk = json.load(fh)  # raises if corrupted/partial
+
+        for case in on_disk["cases"]:
+            assert case["trials"][0]["status"] == COMPLETED
+        assert not os.path.exists(os.path.join(tmp, "state.json.tmp"))

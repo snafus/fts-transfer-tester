@@ -45,10 +45,15 @@ Trial statuses
 
 import json
 import os
+import threading
 from datetime import datetime
 
 
 _STATE_FILENAME = "state.json"
+
+# Guards _write() so that concurrent case-worker threads (parallel_cases
+# execution mode) never race on the shared state.json.tmp path.
+_write_lock = threading.Lock()
 
 PENDING = "pending"
 RUNNING = "running"
@@ -66,11 +71,14 @@ def _write(sequence_dir, state):
     # type: (str, dict) -> None
     # Write to a temp file then rename for atomicity: a process crash during
     # the write must never leave state.json in a partial/corrupt state.
-    path = os.path.join(sequence_dir, _STATE_FILENAME)
-    tmp_path = path + ".tmp"
-    with open(tmp_path, "w") as fh:
-        json.dump(state, fh, indent=2)
-    os.replace(tmp_path, path)
+    # Locked because parallel_cases execution mode has multiple case-worker
+    # threads calling this concurrently against the same tmp_path.
+    with _write_lock:
+        path = os.path.join(sequence_dir, _STATE_FILENAME)
+        tmp_path = path + ".tmp"
+        with open(tmp_path, "w") as fh:
+            json.dump(state, fh, indent=2)
+        os.replace(tmp_path, path)
 
 
 def create(sequence_dir, sequence_id, seq_params, cases, trials,
@@ -214,13 +222,18 @@ def skip_cases_from(sequence_dir, state, from_case_index):
     return count
 
 
-def pending_trials(state):
-    # type: (dict) -> list
+def pending_trials(state, order="case_major"):
+    # type: (dict, str) -> list
     """Return list of ``(case_index, trial_index)`` that need to run.
 
     Both ``pending`` and ``running`` trials are returned; ``running`` entries
     represent trials that were interrupted mid-run and must be retried.
     ``skipped`` trials are excluded.
+
+    Args:
+        state (dict): Sequence state.
+        order (str): ``"case_major"`` — all trials of case 0, then case 1, …
+            ``"trial_major"`` — trial 0 of every case, then trial 1, …
 
     Returns:
         list[tuple[int, int]]: Ordered list of (case_index, trial_index).
@@ -230,4 +243,6 @@ def pending_trials(state):
         for trial in case["trials"]:
             if trial["status"] in (PENDING, RUNNING):
                 result.append((case["case_index"], trial["trial_index"]))
+    if order == "trial_major":
+        result.sort(key=lambda ct: (ct[1], ct[0]))
     return result

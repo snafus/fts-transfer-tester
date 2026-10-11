@@ -21,11 +21,14 @@ process crashed mid-run) are treated as pending and restarted.
 import copy
 import logging
 import os
+import queue
 import shutil
+import threading
 import uuid
 from datetime import datetime
 
 from fts_framework.config import loader as config_loader
+from fts_framework.exceptions import ConfigError
 from fts_framework.runner import generate_run_id, run_campaign
 from fts_framework.sequence import loader as seq_loader
 from fts_framework.sequence import reporter as seq_reporter
@@ -114,6 +117,184 @@ def _write_params_copy(sequence_dir, params_file):
 
 
 # ---------------------------------------------------------------------------
+# Per-trial execution (shared by both the sequential and parallel_cases
+# execution paths, so behavior is identical regardless of mode)
+# ---------------------------------------------------------------------------
+
+def _run_one_trial(state, sequence_dir, runs_dir, baseline_config,
+                    case_index, trial_index, params_file):
+    # type: (dict, str, str, dict, int, int, str) -> None
+    """Build config for one (case, trial) pair and run its campaign.
+
+    Marks the trial running/completed/failed in ``state.json`` as it goes.
+    On ``KeyboardInterrupt``, prints the resume/cancel hint and re-raises.
+    On any other exception, marks the trial failed, logs, and returns
+    normally so the caller can continue with the next trial.
+    """
+    case        = state["cases"][case_index]
+    trial       = case["trials"][trial_index]
+    case_params = case["params"]
+    n_cases     = len(state["cases"])
+    n_trials    = state["trials"]
+
+    logger.info(
+        "Case %d/%d  trial %d/%d  params=%s",
+        case_index + 1, n_cases,
+        trial_index + 1, n_trials,
+        case_params,
+    )
+
+    trial_config = _build_trial_config(baseline_config, case_params)
+
+    # For RUNNING trials (process was interrupted mid-campaign), reuse the
+    # stored run_id so run_campaign() can resume the partial run via its
+    # internal resume logic.  For PENDING trials, generate a fresh run_id.
+    existing_run_id = trial.get("run_id")
+    if trial["status"] == seq_state.RUNNING and existing_run_id:
+        run_id = existing_run_id
+        logger.info(
+            "Resuming interrupted trial (case=%d trial=%d run_id=%s)",
+            case_index, trial_index, run_id,
+        )
+    else:
+        run_id = "c{:02d}_t{:02d}_{}".format(
+            case_index, trial_index, generate_run_id()
+        )
+    trial_config["run"]["run_id"] = run_id
+
+    seq_state.mark_running(
+        sequence_dir, state, case_index, trial_index, run_id,
+    )
+
+    try:
+        run_campaign(trial_config, runs_dir=runs_dir)
+        seq_state.mark_completed(
+            sequence_dir, state, case_index, trial_index,
+        )
+        logger.info(
+            "Case %d trial %d completed: run_id=%s",
+            case_index, trial_index, run_id,
+        )
+    except KeyboardInterrupt:
+        _print_interrupt_hint(sequence_dir, params_file)
+        raise
+    except Exception as exc:
+        seq_state.mark_failed(
+            sequence_dir, state, case_index, trial_index, exc,
+        )
+        logger.error(
+            "Case %d trial %d FAILED (run_id=%s): %s — continuing",
+            case_index, trial_index, run_id, exc,
+            exc_info=True,
+        )
+
+
+def _run_case_sequential(case_index, state, sequence_dir, runs_dir,
+                          baseline_config, params_file):
+    # type: (int, dict, str, str, dict, str) -> None
+    """Run every pending/running trial of one case, strictly in order.
+
+    Used as the unit of work for a parallel_cases worker thread: a whole
+    case is owned by one thread for its full duration, so trials of the
+    same case never run concurrently with each other.
+    """
+    for trial in state["cases"][case_index]["trials"]:
+        if trial["status"] in (seq_state.PENDING, seq_state.RUNNING):
+            _run_one_trial(
+                state, sequence_dir, runs_dir, baseline_config,
+                case_index, trial["trial_index"], params_file,
+            )
+
+
+def _validate_destination_naming_for_parallel(baseline_config, cases):
+    # type: (dict, list) -> None
+    """Require every case to resolve to a non-sequential destination_naming.
+
+    parallel_cases mode runs multiple cases concurrently. If two cases share
+    a resolved dst_prefix/test_label (common in sweeps that vary something
+    else) and use the default 'sequential' naming, both would independently
+    plan testfile_000000, testfile_000001, ... under the same destination
+    directory — two live FTS3 jobs targeting the same path at the same
+    time. Raise before any trial runs rather than let that happen.
+
+    Does not reuse _build_trial_config(): that also refreshes OIDC tokens
+    (real HTTP calls), which this pure validation pass must not trigger.
+    """
+    for case in cases:
+        trial_config = copy.deepcopy(baseline_config)
+        for dotkey, value in case["params"].items():
+            seq_loader.apply_override(trial_config, dotkey, value)
+        naming = trial_config["transfer"].get("destination_naming", "sequential")
+        if naming == "sequential":
+            raise ConfigError(
+                "sequence.execution.mode=parallel_cases requires "
+                "transfer.destination_naming to be 'uuid' or 'date' for "
+                "every case (case_index={} resolves to 'sequential'); "
+                "concurrent cases sharing a destination prefix would "
+                "otherwise collide.".format(case["case_index"])
+            )
+
+
+def _run_parallel_cases(pending, state, sequence_dir, runs_dir,
+                         baseline_config, params_file, max_workers):
+    # type: (list, dict, str, str, dict, str, int) -> None
+    """Run distinct cases concurrently (up to max_workers at a time).
+
+    Each case is claimed by exactly one worker thread, which runs all of
+    that case's pending trials sequentially via _run_case_sequential(). Uses
+    a hand-rolled daemon-thread pool rather than
+    concurrent.futures.ThreadPoolExecutor: CPython's ThreadPoolExecutor
+    worker threads are non-daemon and are joined by an atexit-style hook
+    before the interpreter exits, which would make Ctrl-C block until every
+    in-flight case's *current* trial finishes (campaigns can run for
+    hours). Daemon threads let the process exit immediately on interrupt,
+    exactly like today's single-trial serial-mode behavior — abandoned
+    trials are left 'running' and are resumed the same way an interrupted
+    serial run is resumed today.
+    """
+    case_indices = []
+    seen = set()
+    for case_index, _trial_index in pending:
+        if case_index not in seen:
+            seen.add(case_index)
+            case_indices.append(case_index)
+
+    work_q = queue.Queue()  # type: queue.Queue
+    for case_index in case_indices:
+        work_q.put(case_index)
+
+    def _worker():
+        while True:
+            try:
+                case_index = work_q.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                _run_case_sequential(
+                    case_index, state, sequence_dir, runs_dir,
+                    baseline_config, params_file,
+                )
+            finally:
+                work_q.task_done()
+
+    n_workers = min(max_workers, len(case_indices))
+    threads = [
+        threading.Thread(target=_worker, daemon=True)
+        for _ in range(n_workers)
+    ]
+    for t in threads:
+        t.start()
+
+    try:
+        for t in threads:
+            while t.is_alive():
+                t.join(timeout=0.5)
+    except KeyboardInterrupt:
+        _print_interrupt_hint(sequence_dir, params_file)
+        raise
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -187,65 +368,28 @@ def run_sequence(params_file, resume_dir=None, runs_dir=None,
             len(seq_params["cases"]) * seq_params["trials"],
         )
 
-    pending = seq_state.pending_trials(state)
-    logger.info("%d trial(s) pending", len(pending))
+    execution_order = seq_params.get("execution_order", "trial_major")
+    pending = seq_state.pending_trials(state, order=execution_order)
+    logger.info(
+        "%d trial(s) pending (execution order: %s)", len(pending), execution_order,
+    )
 
-    for case_index, trial_index in pending:
-        case        = state["cases"][case_index]
-        trial       = case["trials"][trial_index]
-        case_params = case["params"]
-        n_cases     = len(state["cases"])
-        n_trials    = state["trials"]
-
+    if seq_params.get("execution_mode", "sequential") == "parallel_cases":
+        _validate_destination_naming_for_parallel(baseline_config, state["cases"])
+        max_workers = seq_params["max_workers"]
         logger.info(
-            "Case %d/%d  trial %d/%d  params=%s",
-            case_index + 1, n_cases,
-            trial_index + 1, n_trials,
-            case_params,
+            "Executing %d case(s) in parallel (max_workers=%d)",
+            len(state["cases"]), max_workers,
         )
-
-        trial_config = _build_trial_config(baseline_config, case_params)
-
-        # For RUNNING trials (process was interrupted mid-campaign), reuse the
-        # stored run_id so run_campaign() can resume the partial run via its
-        # internal resume logic.  For PENDING trials, generate a fresh run_id.
-        existing_run_id = trial.get("run_id")
-        if trial["status"] == seq_state.RUNNING and existing_run_id:
-            run_id = existing_run_id
-            logger.info(
-                "Resuming interrupted trial (case=%d trial=%d run_id=%s)",
-                case_index, trial_index, run_id,
-            )
-        else:
-            run_id = "c{:02d}_t{:02d}_{}".format(
-                case_index, trial_index, generate_run_id()
-            )
-        trial_config["run"]["run_id"] = run_id
-
-        seq_state.mark_running(
-            sequence_dir, state, case_index, trial_index, run_id,
+        _run_parallel_cases(
+            pending, state, sequence_dir, runs_dir,
+            baseline_config, params_file, max_workers,
         )
-
-        try:
-            run_campaign(trial_config, runs_dir=runs_dir)
-            seq_state.mark_completed(
-                sequence_dir, state, case_index, trial_index,
-            )
-            logger.info(
-                "Case %d trial %d completed: run_id=%s",
-                case_index, trial_index, run_id,
-            )
-        except KeyboardInterrupt:
-            _print_interrupt_hint(sequence_dir, params_file)
-            raise
-        except Exception as exc:
-            seq_state.mark_failed(
-                sequence_dir, state, case_index, trial_index, exc,
-            )
-            logger.error(
-                "Case %d trial %d FAILED (run_id=%s): %s — continuing",
-                case_index, trial_index, run_id, exc,
-                exc_info=True,
+    else:
+        for case_index, trial_index in pending:
+            _run_one_trial(
+                state, sequence_dir, runs_dir, baseline_config,
+                case_index, trial_index, params_file,
             )
 
     # Always regenerate summary reports (even on partial completion)
