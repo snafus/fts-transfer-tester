@@ -20,6 +20,7 @@ import logging
 import os
 import sys
 
+from fts_framework.auth import x509 as x509_auth
 from fts_framework.sequence import state as seq_state
 from fts_framework.sequence import reporter as seq_reporter
 from fts_framework.sequence.runner import run_sequence
@@ -127,6 +128,13 @@ def main():
         metavar="TOKEN",
         help="Bearer token for destination storage writes",
     )
+    parser.add_argument(
+        "--x509-proxy",
+        default=None,
+        metavar="PATH",
+        help="Authenticate all roles with this X.509 VOMS proxy instead of "
+             "bearer tokens (forces auth.mode: x509)",
+    )
 
     args = parser.parse_args()
 
@@ -158,6 +166,7 @@ def main():
                 fts_submit_token=args.fts_submit_token,
                 source_read_token=args.source_read_token,
                 dest_write_token=args.dest_write_token,
+                x509_proxy=args.x509_proxy,
             )
         except Exception as exc:
             log.error("Cannot read baseline config %s: %s", baseline, exc)
@@ -184,10 +193,29 @@ def main():
                 fts_submit_token=args.fts_submit_token,
                 source_read_token=args.source_read_token,
                 dest_write_token=args.dest_write_token,
+                x509_proxy=args.x509_proxy,
             )
         except Exception as exc:
             print("FAILED: {}".format(exc))
             sys.exit(1)
+
+        if config["auth"]["mode"] == "x509":
+            proxy = config["auth"]["x509_proxy"]
+            try:
+                x509_auth.check_proxy_lifetime(
+                    proxy, config["auth"]["x509_min_lifetime_s"],
+                )
+            except Exception as exc:
+                print("FAILED: {}".format(exc))
+                sys.exit(1)
+            not_after = x509_auth.proxy_not_after(proxy)
+            print("\nX.509 proxy check result:")
+            print("  {}  OK (expires {})".format(
+                proxy, "{}Z".format(not_after.isoformat()) if not_after else "unknown",
+            ))
+            print("  FTS3 delegation is checked at the start of each trial.")
+            print()
+            sys.exit(0)
 
         print("\nToken check result:")
         for role in ("fts_submit", "source_read", "dest_write"):
@@ -225,15 +253,13 @@ def main():
                 fts_submit_token=args.fts_submit_token,
                 source_read_token=args.source_read_token,
                 dest_write_token=args.dest_write_token,
+                x509_proxy=args.x509_proxy,
             )
         except Exception as exc:
             log.error("Failed to load config for FTS3 connection: %s", exc)
             sys.exit(1)
 
-        fts_session = fts_client_mod.build_session(
-            config["tokens"]["fts_submit"],
-            config["fts"].get("ssl_verify", True),
-        )
+        fts_session = fts_client_mod.build_role_session(config, "fts_submit")
         fts_client = fts_client_mod.FTSClient(
             config["fts"]["endpoint"], fts_session,
         )
@@ -325,6 +351,7 @@ def main():
             fts_submit_token=args.fts_submit_token,
             source_read_token=args.source_read_token,
             dest_write_token=args.dest_write_token,
+            x509_proxy=args.x509_proxy,
         )
         print("Sequence complete: {}".format(sequence_dir))
         sys.exit(0)

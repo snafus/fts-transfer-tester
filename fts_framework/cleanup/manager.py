@@ -31,9 +31,9 @@ persisting these to ``runs/<run_id>/cleanup_pre.json`` or
 Usage::
 
     from fts_framework.cleanup.manager import cleanup_pre, cleanup_post
-    from fts_framework.fts.client import build_session
+    from fts_framework.fts.client import build_role_session
 
-    session = build_session(config["tokens"]["dest_write"], config["fts"]["ssl_verify"])
+    session = build_role_session(config, "dest_write")
     pre_log = cleanup_pre(mapping, session, config)
     # ... run campaign ...
     post_log = cleanup_post(file_records, session, config)

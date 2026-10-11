@@ -99,7 +99,7 @@ All public function signatures carry type annotations using `typing` module type
 
 | Assumption | Detail |
 |---|---|
-| Authentication | OIDC Bearer JWT tokens provided by caller. FTS3 server handles token refresh and validation. Three token roles (`fts_submit`, `source_read`, `dest_write`) may share the same value in single-IAM deployments. |
+| Authentication | OIDC Bearer JWT tokens provided by caller. FTS3 server handles token refresh and validation. Three token roles (`fts_submit`, `source_read`, `dest_write`) may share the same value in single-IAM deployments. Alternatively `auth.mode: x509` uses one externally created and externally delegated VOMS proxy for all roles (no mixed mode); see README "X.509 Proxy Authentication". |
 | PFN accessibility | All source PFNs are reachable via HTTPS/WebDAV from the machine running the framework. `Want-Digest` HEAD requests succeed or return a retryable error. |
 | Destination semantics | Destination prefix is an HTTPS/WebDAV base URL. Destination directory structure will be created implicitly by the storage on first write (standard WebDAV behaviour). |
 | Overwrite behaviour | Controlled by `overwrite` flag in FTS3 job params. If `false`, pre-existing files at destination cause file-level failure. |

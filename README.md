@@ -13,7 +13,9 @@ Production-grade, automation-first FTS3 transfer benchmarking framework written 
 - [Inventory File Format](#inventory-file-format)
 - [Configuration Reference](#configuration-reference)
   - [OIDC Token Generation](#oidc-token-generation)
+  - [X.509 Proxy Authentication](#x509-proxy-authentication)
   - [Multi-Destination Transfers](#multi-destination-transfers)
+  - [Push vs Pull (HTTP-TPC Copy Mode)](#push-vs-pull-http-tpc-copy-mode)
 - [CLI Usage](#cli-usage)
 - [Sequence Runner](#sequence-runner)
 - [Programmatic Usage](#programmatic-usage)
@@ -175,7 +177,7 @@ Full example: [`config/example_config.yaml`](config/example_config.yaml)
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `endpoint` | string | required | FTS3 REST base URL, e.g. `https://fts.example.org:8446` |
-| `ssl_verify` | bool \| string | `true` | SSL certificate verification. `true`, `false`, or path to a CA bundle file. |
+| `ssl_verify` | bool \| string | `true` | SSL certificate verification. `true`, `false`, or path to a CA bundle file or hashed CA directory (e.g. `/etc/grid-security/certificates`). |
 
 ### `tokens`
 
@@ -204,6 +206,14 @@ Tokens can be supplied from multiple sources. When the same role is supplied by 
 
 The `tokens` YAML section may be omitted entirely if all three roles are satisfied through higher-priority sources.  OIDC is only attempted for roles that are not already satisfied by a higher-priority source.
 
+### `auth`
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `mode` | string | `token` | `token` (bearer tokens, above) or `x509` (VOMS proxy for every role). See [X.509 Proxy Authentication](#x509-proxy-authentication). |
+| `x509_proxy` | string | `null` | Proxy file path (x509 mode). See [Where the proxy can be](#where-the-proxy-can-be). |
+| `x509_min_lifetime_s` | int | `3600` | Minimum remaining lifetime required of both the local proxy and the FTS3 delegated credential at campaign start. |
+
 ### `transfer`
 
 | Key | Type | Default | Description |
@@ -223,6 +233,7 @@ The `tokens` YAML section may be omitted entirely if all three roles are satisfi
 | `activity` | string | `"default"` | FTS3 activity share label |
 | `unmanaged_tokens` | bool | `false` | (Not yet implemented — reserved for future FTS3 unmanaged-token mode.) |
 | `nostreams` | int \| null | `null` | Number of parallel TCP/HTTP streams per file transfer. When `null` (or omitted) the parameter is not sent and the FTS3 optimizer decides. Protocol-dependent: silently ignored by endpoints that do not support it. Must be a whole-number integer ≥ 1 in YAML (use `null` or omit the key to let FTS3 decide — note that `None` with a capital N is a YAML string, not null). |
+| `copy_mode` | string \| null | `null` | HTTP third-party-copy mode: `pull` (destination fetches) or `push` (source sends). `null` leaves the server default (pull, falling back to push). See [Push vs Pull](#push-vs-pull-http-tpc-copy-mode). |
 | `job_metadata` | dict | `{}` | User-supplied key/value pairs merged into `job_metadata`. Framework keys (`run_id`, `chunk_index`, `retry_round`, `test_label`) always take priority. |
 
 ### `concurrency`
@@ -435,6 +446,133 @@ When a sequence sweep overrides `transfer.dst_prefix` or `transfer.source_prefix
 
 ---
 
+## X.509 Proxy Authentication
+
+As an alternative to bearer tokens, every FTS3 and storage call can authenticate with a VOMS proxy presented as the TLS client certificate. It is all-or-nothing: in x509 mode no tokens are sent anywhere, and FTS3 uses the proxy you delegated to it for the transfers themselves.
+
+The framework does **not** create proxies or delegate to FTS3. You do both before the run; the framework checks they are in place.
+
+### Quick start
+
+```bash
+# 1. Create the proxy (writes /tmp/x509up_u<uid> unless X509_USER_PROXY is set)
+voms-proxy-init --voms dteam --valid 24:00
+
+# 2. Delegate it to FTS3 (reads the same proxy, so same DN)
+fts-rest-delegate -s https://fts.example.org:8446 --hours 24
+
+# 3. Run. --x509-proxy alone switches the run to x509 mode
+fts-run campaign.yaml --x509-proxy /tmp/x509up_u$(id -u)
+```
+
+Instead of the CLI flag you can set the mode in YAML. Either is sufficient on its own:
+
+```yaml
+fts:
+  endpoint: https://fts.example.org:8446
+  ssl_verify: /etc/grid-security/certificates   # IGTF CAs are rarely in the system bundle
+auth:
+  mode: x509
+  # x509_proxy: /path/to/proxy                  # optional; see "Where the proxy can be"
+  # x509_min_lifetime_s: 3600
+# no tokens section; oidc.enabled must be false
+```
+
+### What the credential file must be
+
+A **proxy file**: a single PEM holding the proxy certificate, its **unencrypted** private key, and the issuing chain. This is exactly what `voms-proxy-init` (or `grid-proxy-init`, `arcproxy`) writes.
+
+Not accepted:
+
+| Credential | Why |
+|---|---|
+| `~/.globus/usercert.pem` + `userkey.pem` | Two files, and the key is passphrase-protected. Create a proxy from them instead. |
+| Any PEM with an encrypted key | Rejected at config load (`ConfigError`); Python's TLS stack would otherwise stop and prompt for a passphrase. |
+| `.p12` / PKCS#12 bundles | Not PEM. Convert and create a proxy. |
+| PEM content in YAML or an environment variable | Only a file **path** is accepted. |
+
+The CA trust store is separate: point `fts.ssl_verify` at a CA bundle file or a hashed CA directory such as `/etc/grid-security/certificates`.
+
+### Where the proxy can be
+
+Any local path readable by the user running the framework: `/tmp`, home directory, a shared or network filesystem, a mounted secret. Resolution order (highest wins):
+
+| Priority | Source |
+|---|---|
+| 1 | `--x509-proxy PATH` (also forces `auth.mode: x509`) |
+| 2 | `X509_USER_PROXY` environment variable |
+| 3 | `auth.x509_proxy` in the YAML |
+| 4 | `/tmp/x509up_u<uid>` (the `voms-proxy-init` default) |
+
+Only the path is recorded in `runs/<run_id>/config.yaml`; the file contents are never read into logs, reports, or run outputs. The path is also not stored in sequence state, so `fts-sequence --resume` / `--rerun-failed` need `--x509-proxy` or `X509_USER_PROXY` supplied again (or `auth` set in the baseline YAML).
+
+### Lifetimes
+
+There is no automatic renewal or re-delegation, so the credentials must outlive the run:
+
+- The delegated credential cannot outlive the proxy it was made from, so create the proxy with at least the lifetime you delegate.
+- The VOMS attributes in the proxy have their own lifetime, capped by the VO's VOMS server (often 24–96h) regardless of `--valid`.
+- For long sequences, re-run `voms-proxy-init` and `fts-rest-delegate -f` between trials as needed; each trial re-checks before it starts.
+
+### Checks the framework performs
+
+At the start of every campaign (so every sequence trial):
+
+1. The local proxy has at least `x509_min_lifetime_s` remaining.
+2. `GET /whoami` succeeds (fatal in x509 mode) and returns a `delegation_id`; a warning is logged if FTS3 sees no VOMS attributes.
+3. `GET /delegation/{delegation_id}` shows a delegated credential with at least `x509_min_lifetime_s` remaining. Otherwise the run stops with `X509CredentialError` before any submission, with the `fts-rest-delegate` command to fix it.
+
+If FTS3 returns 401/403 mid-run, `ProxyExpiredError` is raised (a `TokenExpiredError` subclass, so normal resume handling applies): renew the proxy, re-delegate, and resume.
+
+`fts-sequence --check-tokens --x509-proxy PATH` validates the proxy file and its local expiry only; delegation is checked when each trial starts.
+
+### No mixed mode
+
+In x509 mode a `tokens` section, any `--*-token` / `--token` flag, or `oidc.enabled: true` is a `ConfigError`. Token environment variables (`FTS_TOKEN`, `FTS_SUBMIT_TOKEN`, ...) are ignored with a warning, since they are often set in the shell incidentally.
+
+---
+
+## Push vs Pull (HTTP-TPC Copy Mode)
+
+`transfer.copy_mode` forces the HTTP third-party-copy direction per campaign, with no FTS3 or gfal2 server configuration change:
+
+| Value | Active party | Effect |
+|---|---|---|
+| `null` (default) | server default | Nothing added. gfal2 tries pull, then push, then streamed (if enabled). The mode actually used is not recorded. |
+| `pull` | destination | Destination storage issues the GET to the source. |
+| `push` | source | Source storage issues the PUT to the destination. |
+
+**Mechanism:** the framework appends `?copy_mode=<mode>` to each destination URL in the job payload. gfal2's HTTP plugin reads it ahead of any server-side default and, because the mode is explicit, **disables its pull→push→streamed fallback**. A `push` campaign therefore transfers by push or fails; it never quietly becomes pull.
+
+**What is verified and reported:**
+
+- The requested mode is recorded in the run config copy, in every job's `job_metadata.copy_mode`, and in the report header.
+- FTS3 echoes the query back in each file's `dest_surl`. The report shows `FTS3 echoed on n/N files`, and warns if any file's echoed mode differs from the request. `files.csv` has a per-file `copy_mode` column.
+- FTS3's REST API does not report the mode a successful transfer actually used. That is inferred from the explicit request plus gfal2's no-fallback behaviour. Per-transfer gfal2 logs (`log_file`) would show it, but are usually not reachable with user credentials.
+
+Internally, normalised file records keep the clean `dest_surl` (query removed), so cleanup DELETEs, framework retries and resume reminting all use the real path. Raw responses under `raw/` keep the URL exactly as FTS3 returned it.
+
+**Comparing push and pull** — sweep it in a sequence; the mode becomes a `param_transfer.copy_mode` column in `summary.csv` / `summary.md`:
+
+```yaml
+baseline_config: "config/my_campaign.yaml"
+sequence:
+  trials: 3
+  label: "push_vs_pull"
+  sweep:
+    parameters:
+      transfer.copy_mode: [pull, push]
+```
+
+See `config/example_sequence_copy_mode.yaml`. Points to check when interpreting results:
+
+- **Credentials differ by mode.** In push the *source* storage writes to the destination, so it needs the destination credential: with tokens FTS3 forwards the destination token to the source; with X.509 the source must support credential delegation. A push failure may be an authorisation difference, not a performance one; check `reason` in `files.csv`.
+- **Per-SE TPC support (FTS3 3.13+)** may be configured as pull-only or push-only on the server. Whether that is applied before gfal2 sees the URL has not been verified; a mode the server disallows will show up as failures.
+- Only HTTP/WebDAV TPC is affected, which is all the framework supports (`https://`, `davs://`).
+- `tools/probe_copy_mode.py CONFIG SOURCE_URL` submits one 1-file job per mode and prints the echoed URL, outcome and reason — a quick check that a storage pair supports both directions before running a sweep.
+
+---
+
 ## Multi-Destination Transfers
 
 To spread load across multiple destination storage endpoints, use `transfer.destinations` instead of `transfer.dst_prefix`. Files are partitioned into contiguous groups, one per destination, in config order.
@@ -522,6 +660,7 @@ fts-run <config> [options]
 | `--fts-submit-token TOKEN` | Token for FTS3 job submission (overrides `FTS_SUBMIT_TOKEN` env var) |
 | `--source-read-token TOKEN` | Token for source storage reads (overrides `SOURCE_READ_TOKEN` env var) |
 | `--dest-write-token TOKEN` | Token for destination storage writes (overrides `DEST_WRITE_TOKEN` env var) |
+| `--x509-proxy PATH` | Authenticate every role with this VOMS proxy instead of tokens (forces `auth.mode: x509`). Cannot be combined with token flags. See [X.509 Proxy Authentication](#x509-proxy-authentication). |
 | `--cancel-job JOB_ID` | Cancel a single FTS3 job by ID (`DELETE /jobs/{id}`) using the endpoint/token resolved from `config`, then exit. No campaign is run. |
 
 Token precedence: per-role CLI flags > `--token` > per-role env vars > `FTS_TOKEN` > YAML. See [Token resolution order](#token-resolution-order).
