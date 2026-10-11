@@ -17,6 +17,8 @@ Hierarchy::
     ├── SubmissionError
     ├── PollingTimeoutError
     ├── TokenExpiredError
+    │   └── ProxyExpiredError
+    ├── X509CredentialError
     ├── PersistenceError
     ├── CleanupError          (non-fatal by default)
     ├── ResumeError
@@ -109,6 +111,31 @@ class TokenExpiredError(FTSFrameworkError):
             msg += " while polling job {!r}".format(job_id)
         msg += ". Re-acquire a token and resume the run."
         super(TokenExpiredError, self).__init__(msg)
+
+
+class ProxyExpiredError(TokenExpiredError):
+    """Raised instead of ``TokenExpiredError`` when FTS3 returns HTTP 401 or
+    403 to a session authenticated with an X.509 proxy (``auth.mode: x509``).
+
+    Subclasses ``TokenExpiredError`` so every existing auth-failure handler
+    applies unchanged.
+    """
+
+    def __init__(self, job_id=None):
+        # type: (object) -> None
+        self.job_id = job_id
+        msg = "X.509 proxy rejected or expired"
+        if job_id:
+            msg += " while polling job {!r}".format(job_id)
+        msg += ". Renew the proxy (voms-proxy-init), re-delegate, and resume the run."
+        FTSFrameworkError.__init__(self, msg)
+
+
+class X509CredentialError(FTSFrameworkError):
+    """Raised by the X.509 pre-flight checks: missing delegation, or a local
+    proxy / delegated credential with less than ``auth.x509_min_lifetime_s``
+    remaining.
+    """
 
 
 class PersistenceError(FTSFrameworkError):

@@ -5,12 +5,14 @@ Authenticated HTTP client for the FTS3 REST API.
 
 Provides a ``requests.Session`` factory and an ``FTSClient`` wrapper that:
 
-* Adds ``Authorization: Bearer <token>`` to every request.
+* Adds ``Authorization: Bearer <token>`` to every request, or presents an
+  X.509 proxy as the TLS client certificate (``auth.mode: x509``).
 * Controls SSL verification (system bundle, custom CA path, or disabled).
 * Applies exponential-backoff retries for transient HTTP errors (429, 502,
   503, 504) and ``requests`` connection/timeout exceptions.
 * Raises ``TokenExpiredError`` on HTTP 401 or 403 (FTS3 returns either
-  status when the bearer token has expired or lacks permission).
+  status when the bearer token has expired or lacks permission), or its
+  subclass ``ProxyExpiredError`` for proxy-authenticated sessions.
 
 All network I/O goes through ``FTSClient.request()``.  Higher-level modules
 call ``FTSClient.get()`` and ``FTSClient.post()`` which return parsed JSON or
@@ -19,7 +21,7 @@ raise framework exceptions.
 Usage::
 
     from fts_framework.fts.client import build_session, FTSClient
-    session = build_session(token, config["fts"]["ssl_verify"])
+    session = build_role_session(config, "fts_submit")
     client = FTSClient(config["fts"]["endpoint"], session)
     job_list = client.get("/jobs", params={"time_window": 0.1})
 """
@@ -29,7 +31,7 @@ import time
 
 import requests as req_lib
 
-from fts_framework.exceptions import TokenExpiredError
+from fts_framework.exceptions import ProxyExpiredError, TokenExpiredError
 
 logger = logging.getLogger(__name__)
 
@@ -44,21 +46,29 @@ _DEFAULT_MAX_RETRIES = 3
 _DEFAULT_INITIAL_BACKOFF_S = 5
 
 
-def build_session(token, ssl_verify):
-    # type: (str, object) -> req_lib.Session
+def build_session(token, ssl_verify, cert=None):
+    # type: (object, object, object) -> req_lib.Session
     """Create and return a ``requests.Session`` pre-configured for FTS3.
 
     Args:
-        token (str): Bearer token string (opaque; not inspected or logged).
+        token (str or None): Bearer token string (opaque; not inspected or
+            logged).  Ignored when *cert* is given.
         ssl_verify (bool or str): SSL verification setting.  Pass ``True``
             for the system CA bundle, ``False`` to disable (insecure, warned),
-            or a ``str`` path to a custom CA bundle.
+            or a ``str`` path to a custom CA bundle or hashed CA directory
+            (e.g. ``/etc/grid-security/certificates``).
+        cert (str or None): Path to an X.509 proxy PEM (certificate, key and
+            chain in one file) presented as the TLS client certificate.
+            When set, no ``Authorization`` header is added.
 
     Returns:
-        requests.Session: Session with Authorization header and verify set.
+        requests.Session: Session with credentials and verify set.
     """
     session = req_lib.Session()
-    session.headers.update({"Authorization": "Bearer {}".format(token)})
+    if cert:
+        session.cert = cert
+    else:
+        session.headers.update({"Authorization": "Bearer {}".format(token)})
     session.verify = ssl_verify
 
     if ssl_verify is False:
@@ -77,6 +87,20 @@ def build_session(token, ssl_verify):
         logger.info("SSL verification enabled (system default CA bundle)")
 
     return session
+
+
+def build_role_session(config, role):
+    # type: (dict, str) -> req_lib.Session
+    """Return a session authenticated for *role* according to ``auth.mode``.
+
+    In ``x509`` mode every role presents the same proxy; in ``token`` mode
+    (the default) the session carries ``config["tokens"][role]``.
+    """
+    ssl_verify = config.get("fts", {}).get("ssl_verify", True)
+    auth_cfg = config.get("auth") or {}
+    if auth_cfg.get("mode") == "x509":
+        return build_session(None, ssl_verify, cert=auth_cfg["x509_proxy"])
+    return build_session(config["tokens"][role], ssl_verify)
 
 
 def fts_request_with_retry(session, method, url,
@@ -205,6 +229,8 @@ class FTSClient(object):
             **kwargs
         )
         if resp.status_code in (401, 403):
+            if self.session.cert:
+                raise ProxyExpiredError()
             raise TokenExpiredError()
         return resp
 
