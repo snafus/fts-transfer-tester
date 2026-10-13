@@ -225,26 +225,43 @@ def _persist_terminal_job_states(subjobs, fts_client, run_id, runs_dir):
             )
 
 
+def _stamp_origin(records, origin):
+    # type: (list, dict) -> None
+    """Set ``origin_dest_surl`` on file or retry records, in place.
+
+    A planned transfer is identified by its source and its *original*
+    destination: source PFNs repeat when ``max_files`` pads the inventory,
+    and remint modes give each resubmission a fresh destination.  *origin*
+    maps ``(source, reminted_dest)`` to the original destination; any pair
+    not in it is its own origin.
+    """
+    for rec in records:
+        dst = rec.get("dest_surl")
+        rec["origin_dest_surl"] = origin.get((rec.get("source_surl"), dst), dst)
+
+
+def _transfer_key(rec):
+    # type: (dict) -> tuple
+    return (rec["source_surl"], rec.get("origin_dest_surl") or rec.get("dest_surl"))
+
+
 def _merge_file_records(existing, new_records):
     # type: (list, list) -> list
     """Merge retry-round file records into the existing record list.
 
-    For each source PFN that appears in *new_records*, replace the
-    corresponding entry in *existing*.  Files not present in the retry
-    batch (e.g. already FINISHED) are preserved unchanged.
+    Each record in *new_records* replaces the entry in *existing* for the
+    same planned transfer (``_transfer_key``).  Files not present in the
+    retry batch (e.g. already FINISHED) are preserved unchanged.
 
     Args:
         existing (list[dict]): File records from all previous rounds.
         new_records (list[dict]): File records from the latest retry round.
 
     Returns:
-        list[dict]: Merged list with at most one record per source PFN.
+        list[dict]: Merged list with one record per planned transfer.
     """
-    new_by_src = {r["source_surl"]: r for r in new_records}
-    result = []
-    for fr in existing:
-        result.append(new_by_src.get(fr["source_surl"], fr))
-    return result
+    new_by_key = {_transfer_key(r): r for r in new_records}
+    return [new_by_key.get(_transfer_key(fr), fr) for fr in existing]
 
 
 # ---------------------------------------------------------------------------
@@ -420,6 +437,10 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
     file_records, retry_records, dm_records = collector.harvest_all(
         subjobs, fts_client, run_id=run_id, runs_dir=runs_dir,
     )
+    # (source, reminted dest) -> original dest; filled by the retry loop
+    origin = {}  # type: dict
+    _stamp_origin(file_records, origin)
+    _stamp_origin(retry_records, origin)
     store.write_normalized(
         run_id, file_records, retry_records, dm_records, runs_dir=runs_dir,
     )
@@ -458,35 +479,33 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
             retry_round, len(failed), len(submission_failed_pfns),
         )
 
+        # Match FAILED/CANCELED file records on the exact (source, dest)
+        # pair FTS3 actually used, not just the source PFN — planner.plan()
+        # allows duplicate source PFNs (sampling padding), each with its
+        # own destination; matching on source alone would resubmit every
+        # occurrence of a repeated source, including ones that already
+        # succeeded.  submission_failed_pfns have no file record yet (no
+        # dest_surl available) and are still matched by source alone.
+        submission_failed_set = set(submission_failed_pfns)
+        failed_pairs = {(fr["source_surl"], fr.get("dest_surl")) for fr in failed}
+        to_retry = [
+            (src, dst) for src, dst in mapping
+            if (src, dst) in failed_pairs or src in submission_failed_set
+        ]
+
         if destination_naming in dest_planner.REMINT_ON_RESUBMIT_MODES:
-            # Match FAILED/CANCELED file records on the exact (source, dest)
-            # pair FTS3 actually used, not just the source PFN — planner.plan()
-            # allows duplicate source PFNs (sampling padding), each with its
-            # own destination, and reminting is destructive: matching on
-            # source alone would remint (and resubmit) every occurrence of a
-            # repeated source, including ones that already succeeded.
-            # submission_failed_pfns have no file record yet (no dest_surl
-            # available) and are still matched by source alone.
-            submission_failed_set = set(submission_failed_pfns)
-            failed_pairs = {(fr["source_surl"], fr.get("dest_surl")) for fr in failed}
             retry_mapping = []
             remap = {}
-            for src, dst in mapping:
-                if (src, dst) in failed_pairs or src in submission_failed_set:
-                    new_dst = dest_planner.remint(dst)
-                    retry_mapping.append((src, new_dst))
-                    remap[(src, dst)] = new_dst
+            for src, dst in to_retry:
+                new_dst = dest_planner.remint(dst)
+                retry_mapping.append((src, new_dst))
+                remap[(src, dst)] = new_dst
+                origin[(src, new_dst)] = origin.get((src, dst), dst)
             # Fold reminted destinations back so a later round continues from
             # the latest destination rather than the stale original.
             mapping = [(src, remap.get((src, dst), dst)) for src, dst in mapping]
         else:
-            failed_sources = {fr["source_surl"] for fr in failed}
-            failed_sources.update(submission_failed_pfns)
-
-            retry_mapping = [
-                (src, dst) for src, dst in mapping
-                if src in failed_sources
-            ]
+            retry_mapping = to_retry
 
         retry_subjobs = _submit_chunks(
             retry_mapping, checksums, config, run_id, retry_round,
@@ -504,6 +523,8 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
         new_file_records, new_retry_records, new_dm_records = collector.harvest_all(
             retry_subjobs, fts_client, run_id=run_id, runs_dir=runs_dir,
         )
+        _stamp_origin(new_file_records, origin)
+        _stamp_origin(new_retry_records, origin)
         file_records = _merge_file_records(file_records, new_file_records)
         retry_records = retry_records + new_retry_records
         dm_records = dm_records + new_dm_records

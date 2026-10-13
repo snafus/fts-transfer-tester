@@ -458,29 +458,42 @@ class TestEstimateConcurrency:
 # ---------------------------------------------------------------------------
 
 class TestRetryDistribution:
-    def test_grouped_by_source_surl_across_rounds(self):
-        # Same logical file, new FTS3 file_id after a framework resubmission
-        recs = [{"file_id": 1, "source_surl": "https://src/a"},
-                {"file_id": 7, "source_surl": "https://src/a"},
-                {"file_id": 2, "source_surl": "https://src/b"}]
+    def test_grouped_by_planned_transfer_across_rounds(self):
+        # Same planned transfer (s/a -> d/a), new FTS3 file_id after a
+        # framework resubmission (reminted to d/a2, origin stays d/a)
+        recs = [{"file_id": 1, "source_surl": "s/a", "origin_dest_surl": "d/a"},
+                {"file_id": 7, "source_surl": "s/a", "origin_dest_surl": "d/a"},
+                {"file_id": 2, "source_surl": "s/b", "origin_dest_surl": "d/b"}]
         assert _retry_distribution(recs) == {"2": 1, "1": 1}
 
-    def test_falls_back_to_file_id_without_source_surl(self):
-        recs = [{"file_id": 1}, {"file_id": 1}, {"file_id": 2}]
-        assert _retry_distribution(recs) == {"2": 1, "1": 1}
+    def test_padded_duplicate_sources_kept_separate(self):
+        # Regression (#16): max_files padding repeats s/a with two
+        # destinations; grouping by source alone merged them into one file.
+        recs = [{"file_id": 1, "source_surl": "s/a", "origin_dest_surl": "d/a1"},
+                {"file_id": 2, "source_surl": "s/a", "origin_dest_surl": "d/a2"}]
+        assert _retry_distribution(recs) == {"1": 2}
 
     def test_compute_retry_rate_across_framework_rounds(self):
-        # Regression: one logical file retried in two rounds gave
-        # files_with_retries=2, retry_rate=2.0.
+        # One planned transfer retried in two rounds counts once.
         f = _file(file_id=7)
-        f["source_surl"] = "https://src/a"
-        recs = [{"file_id": 1, "source_surl": "https://src/a"},
-                {"file_id": 7, "source_surl": "https://src/a"}]
+        f["source_surl"] = "s/a"
+        f["origin_dest_surl"] = "d/a"
+        recs = [{"file_id": 1, "source_surl": "s/a", "origin_dest_surl": "d/a"},
+                {"file_id": 7, "source_surl": "s/a", "origin_dest_surl": "d/a"}]
         snap = compute([f], recs, _config(), "r")
         assert snap["total_retries"] == 2
         assert snap["files_with_retries"] == 1
         assert snap["retry_rate"] == pytest.approx(1.0)
         assert snap["retry_distribution"] == {"2": 1}
+
+    def test_compute_padded_campaign_without_framework_retry(self):
+        f1 = _file(file_id=1)
+        f2 = _file(file_id=2)
+        recs = [{"file_id": 1, "source_surl": "s/a", "origin_dest_surl": "d/a1"},
+                {"file_id": 2, "source_surl": "s/a", "origin_dest_surl": "d/a2"}]
+        snap = compute([f1, f2], recs, _config(), "r")
+        assert snap["files_with_retries"] == 2
+        assert snap["retry_distribution"] == {"1": 2}
 
     def test_empty_returns_empty_dict(self):
         assert _retry_distribution([]) == {}

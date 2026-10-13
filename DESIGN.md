@@ -390,7 +390,7 @@ Maps directly to FTS3 `/jobs/{id}/files` response fields:
 
     # Retries
     "total_retries": int,
-    "files_with_retries": int,   # logical files (keyed by source_surl across framework retry rounds)
+    "files_with_retries": int,   # planned transfers, keyed (source_surl, origin_dest_surl) across framework retry rounds
     "retry_rate": float,         # files_with_retries / total_files
     "retry_distribution": dict,  # {"0": N, "1": N, "2": N, ...}
 

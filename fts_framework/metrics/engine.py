@@ -623,14 +623,18 @@ def _retry_distribution(retry_records):
 
 def _retry_file_key(rec):
     # type: (dict) -> object
-    """Identify the logical file a retry record belongs to.
+    """Identify the planned transfer a retry record belongs to.
 
     A framework retry resubmits the file in a new job with a new FTS3
-    ``file_id``; ``source_surl`` is stable across rounds (the inventory
-    forbids duplicates).  Records harvested before ``source_surl`` was
-    recorded fall back to ``file_id``.
+    ``file_id``, so the key is ``(source_surl, origin_dest_surl)`` as
+    stamped by the runner (source alone is not unique: ``max_files``
+    padding repeats sources).  Records without it fall back to
+    ``file_id``, which is exact for runs without framework retry.
     """
-    return rec.get("source_surl") or rec["file_id"]
+    origin = rec.get("origin_dest_surl")
+    if origin:
+        return (rec.get("source_surl"), origin)
+    return rec["file_id"]
 
 
 # ---------------------------------------------------------------------------
