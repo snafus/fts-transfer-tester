@@ -390,14 +390,14 @@ Maps directly to FTS3 `/jobs/{id}/files` response fields:
 
     # Retries
     "total_retries": int,
-    "files_with_retries": int,
+    "files_with_retries": int,   # logical files (keyed by source_surl across framework retry rounds)
     "retry_rate": float,         # files_with_retries / total_files
     "retry_distribution": dict,  # {"0": N, "1": N, "2": N, ...}
 
     # Concurrency
     "peak_concurrency": int,
     "mean_concurrency": float,
-    "concurrency_timeline": list,  # [{"t": epoch, "active": N}]
+    "concurrency_timeline": list,  # [{"t": epoch, "active": N}], half-open [t_min, t_max)
 
     # Failures
     "failure_reasons": dict,     # {reason_category: count}
@@ -785,6 +785,12 @@ aggregate_throughput = total_bytes / (campaign_end - campaign_start)
 
 ### Concurrency Estimation
 
+Every transfer with valid timestamps counts towards `active`, including
+FAILED and CANCELED ones, because each occupied an FTS3 slot while it ran.
+Throughput and bytes in flight count FINISHED files only. Implemented in
+`metrics/engine.py::_estimate_concurrency` with a difference array; the sketch
+below shows the semantics.
+
 ```python
 def estimate_concurrency(file_records, bucket_width_s=1):
     # type: (List[dict], int) -> List[dict]
@@ -795,7 +801,7 @@ def estimate_concurrency(file_records, bucket_width_s=1):
     t_max = max(parse_epoch(f["finish_time"]) for f in finished)
     buckets = []
     t = t_min
-    while t <= t_max:
+    while t < t_max:
         active = sum(
             1 for f in finished
             if parse_epoch(f["start_time"]) <= t < parse_epoch(f["finish_time"])

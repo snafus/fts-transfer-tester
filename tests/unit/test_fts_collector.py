@@ -222,6 +222,12 @@ class TestHarvestRetries:
         assert result[0]["reason"] == "timeout"
         assert result[0]["transfer_host"] == "worker1"
 
+    def test_source_surl_recorded(self):
+        raw = [{"attempt": 0, "datetime": "", "reason": "x", "transfer_host": "h"}]
+        client = _FakeClient([raw])
+        result = _harvest_retries(client, "job-1", 42, source_surl="https://src/a")
+        assert result[0]["source_surl"] == "https://src/a"
+
     def test_calls_correct_endpoint(self):
         client = _FakeClient([[]])
         _harvest_retries(client, "job-abc", 7)
@@ -319,6 +325,13 @@ class TestHarvestAll:
         file_recs, retry_recs, dm_recs = harvest_all([_subjob("job-1")], client)
         assert len(retry_recs) == 1
         assert retry_recs[0]["file_id"] == 1
+
+    def test_retry_records_carry_file_source_surl(self):
+        retry_data = [{"attempt": 0, "datetime": "", "reason": "x", "transfer_host": "h"}]
+        client = self._client_for_job(
+            [_fts_file(file_id=1, source_surl="https://src/a")], [retry_data], [])
+        _, retry_recs, _ = harvest_all([_subjob("job-1")], client)
+        assert retry_recs[0]["source_surl"] == "https://src/a"
 
     def test_multiple_files_retries_fetched_per_file(self):
         files = [_fts_file(file_id=1), _fts_file(file_id=2)]
