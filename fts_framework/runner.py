@@ -36,6 +36,7 @@ Programmatic usage::
 """
 
 import argparse
+import copy
 import logging
 import random
 import sys
@@ -550,6 +551,47 @@ def run_campaign(config, runs_dir=store._DEFAULT_RUNS_DIR):
 
 
 # ---------------------------------------------------------------------------
+# Offline recompute
+# ---------------------------------------------------------------------------
+
+def recompute_run(run_id, runs_dir=store._DEFAULT_RUNS_DIR, console=True):
+    # type: (str, str, bool) -> dict
+    """Recompute metrics and reports for a completed run from disk.
+
+    Reads the run's redacted ``config.yaml``, ``normalized/`` records and
+    manifest; no FTS3 or storage access.  Rewrites
+    ``metrics/snapshot.json`` and ``reports/``.  Raw and normalised data
+    are left untouched.
+
+    Args:
+        run_id (str): Run identifier under *runs_dir*.
+        runs_dir (str): Base directory for run outputs.
+        console (bool): Print the console report.
+
+    Returns:
+        dict: The recomputed ``MetricsSnapshot``.
+    """
+    config = store.load_run_config(run_id, runs_dir=runs_dir)
+    file_records, retry_records = store.load_normalized(run_id, runs_dir=runs_dir)
+    manifest = store.load_manifest(run_id, runs_dir=runs_dir)
+
+    snapshot = metrics_engine.compute(file_records, retry_records, config, run_id)
+    snapshot["ssl_verify_disabled"] = manifest.get("ssl_verify_disabled", False)
+
+    if not console:
+        config = copy.deepcopy(config)
+        config.setdefault("output", {}).setdefault("reports", {})["console"] = False
+    renderer.render_all(
+        snapshot, config,
+        subjobs=manifest.get("subjobs", []),
+        file_records=file_records,
+        runs_dir=runs_dir,
+    )
+    logger.info("Recomputed metrics for run %s", run_id)
+    return snapshot
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 
@@ -562,7 +604,9 @@ def main():
     )
     parser.add_argument(
         "config",
-        help="Path to campaign YAML config file",
+        nargs="?",
+        default=None,
+        help="Path to campaign YAML config file (not needed with --recompute)",
     )
     parser.add_argument(
         "--runs-dir",
@@ -614,6 +658,13 @@ def main():
         help="Cancel a single FTS3 job by ID (DELETE /jobs/{id}) using the "
              "endpoint/token from the given config, then exit — no campaign is run",
     )
+    parser.add_argument(
+        "--recompute",
+        metavar="RUN_ID",
+        default=None,
+        help="Recompute metrics and reports for a completed run from its "
+             "stored normalised records (offline; no FTS3 access), then exit",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -621,6 +672,18 @@ def main():
         format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
         stream=sys.stderr,
     )
+
+    if args.recompute:
+        try:
+            recompute_run(args.recompute, runs_dir=args.runs_dir)
+        except Exception as exc:
+            logger.error("Recompute failed for %s: %s", args.recompute, exc,
+                         exc_info=True)
+            sys.exit(1)
+        sys.exit(0)
+
+    if args.config is None:
+        parser.error("config is required unless --recompute is given")
 
     config = config_loader.load(
         args.config,

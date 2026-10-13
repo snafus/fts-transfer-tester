@@ -653,7 +653,7 @@ fts-run <config> [options]
 
 | Argument | Description |
 |---|---|
-| `config` | Path to campaign YAML config file (required) |
+| `config` | Path to campaign YAML config file (required, unless `--recompute` is given) |
 | `--runs-dir DIR` | Base directory for run outputs (default: `runs/`) |
 | `--log-level LEVEL` | Logging verbosity: `DEBUG`, `INFO`, `WARNING`, `ERROR` (default: `INFO`) |
 | `--token TOKEN` | Bearer token for all three roles (overrides `FTS_TOKEN` env var and YAML) |
@@ -662,6 +662,7 @@ fts-run <config> [options]
 | `--dest-write-token TOKEN` | Token for destination storage writes (overrides `DEST_WRITE_TOKEN` env var) |
 | `--x509-proxy PATH` | Authenticate every role with this VOMS proxy instead of tokens (forces `auth.mode: x509`). Cannot be combined with token flags. See [X.509 Proxy Authentication](#x509-proxy-authentication). |
 | `--cancel-job JOB_ID` | Cancel a single FTS3 job by ID (`DELETE /jobs/{id}`) using the endpoint/token resolved from `config`, then exit. No campaign is run. |
+| `--recompute RUN_ID` | Recompute `metrics/snapshot.json` and `reports/` for a completed run from its stored `normalized/` records and redacted `config.yaml`, then exit. Offline: no FTS3 or storage access, no tokens. Raw and normalised data are not modified. |
 
 Token precedence: per-role CLI flags > `--token` > per-role env vars > `FTS_TOKEN` > YAML. See [Token resolution order](#token-resolution-order).
 
@@ -695,6 +696,9 @@ cat runs/<run_id>/metrics/snapshot.json | jq '.success_rate'
 
 # Cancel a single FTS3 job by ID (any config pointed at the right endpoint/token works)
 fts-run campaign.yaml --cancel-job 1234abcd-56ef-78gh-90ij-klmnopqrstuv
+
+# Recompute metrics for an existing run after a metrics-engine change
+fts-run --recompute 20260324_120000_abc123 --runs-dir /data/fts-runs
 ```
 
 To cancel every non-terminal job tracked by a sequence, use `fts-sequence --cancel-jobs <SEQUENCE_DIR>` instead (see [Sequence Runner](#sequence-runner)) — it discovers job IDs automatically from `state.json` and each trial's `manifest.json`, rather than requiring a single job ID.
@@ -716,6 +720,7 @@ fts-sequence <params> [options]
 | `--resume SEQUENCE_DIR` | Resume an interrupted sequence from its output directory |
 | `--rerun-failed SEQUENCE_DIR` | Reset all `failed` trials to `pending` and rerun them |
 | `--report SEQUENCE_DIR` | Regenerate summary reports from completed runs without running anything (safe mid-sequence) |
+| `--recompute SEQUENCE_DIR` | Recompute every completed trial's metrics from its stored normalised records (as `fts-run --recompute`), then regenerate summary reports. Use after a metrics-engine change; `--report` alone re-aggregates the existing snapshots |
 | `--skip-from-case SEQUENCE_DIR` | Mark all pending trials in cases from `--from-case-index` onwards as `skipped` |
 | `--from-case-index N` | First case index to skip (required with `--skip-from-case`) |
 | `--cancel-jobs SEQUENCE_DIR` | Cancel all non-terminal FTS3 jobs associated with the sequence |
@@ -811,6 +816,9 @@ fts-sequence --rerun-failed sequences/20260324_abc123_scale_test/
 
 # Regenerate summary reports from whatever runs have completed (safe mid-sequence)
 fts-sequence --report sequences/20260324_abc123_scale_test/
+
+# Recompute every trial's metrics offline (e.g. after a metrics fix), then regenerate reports
+fts-sequence --recompute sequences/20260324_abc123_scale_test/
 
 # Truncate a sweep mid-run: skip cases 3 onwards (e.g. early results are sufficient)
 fts-sequence --skip-from-case sequences/20260324_abc123_scale_test/ --from-case-index 3

@@ -37,6 +37,11 @@ Usage::
     store.write_normalized(run_id, file_records, retry_records, dm_records)
     store.write_metrics(run_id, snapshot)
     store.mark_completed(run_id)
+
+Offline recompute reads back what a completed run wrote::
+
+    config = store.load_run_config(run_id)
+    file_records, retry_records = store.load_normalized(run_id)
 """
 
 import copy
@@ -197,6 +202,22 @@ def load_manifest(run_id, runs_dir=_DEFAULT_RUNS_DIR):
         raise ResumeError(path, str(exc))
 
 
+def load_run_config(run_id, runs_dir=_DEFAULT_RUNS_DIR):
+    # type: (str, str) -> dict
+    """Load the token-redacted ``config.yaml`` written at run start.
+
+    Args:
+        run_id (str): Unique run identifier.
+        runs_dir (str): Base directory for run outputs.
+
+    Returns:
+        dict: Parsed config dict (token values are ``"<REDACTED>"``).
+    """
+    path = os.path.join(runs_dir, run_id, "config.yaml")
+    with open(path, "r") as fh:
+        return yaml.safe_load(fh)
+
+
 # ---------------------------------------------------------------------------
 # Raw REST responses
 # ---------------------------------------------------------------------------
@@ -284,6 +305,25 @@ def write_normalized(run_id, file_records, retry_records, dm_records,
     )
 
 
+def load_normalized(run_id, runs_dir=_DEFAULT_RUNS_DIR):
+    # type: (str, str) -> tuple
+    """Load normalised file and retry records from ``normalized/``.
+
+    Args:
+        run_id (str): Unique run identifier.
+        runs_dir (str): Base directory for run outputs.
+
+    Returns:
+        tuple: ``(file_records, retry_records)`` lists of dicts.
+    """
+    norm_dir = os.path.join(runs_dir, run_id, "normalized")
+    with open(os.path.join(norm_dir, "file_records.json"), "r") as fh:
+        file_records = json.load(fh)
+    with open(os.path.join(norm_dir, "retry_records.json"), "r") as fh:
+        retry_records = json.load(fh)
+    return file_records, retry_records
+
+
 # ---------------------------------------------------------------------------
 # Metrics snapshot
 # ---------------------------------------------------------------------------
@@ -300,6 +340,7 @@ def write_metrics(run_id, snapshot, runs_dir=_DEFAULT_RUNS_DIR):
     path = os.path.join(runs_dir, run_id, "metrics", "snapshot.json")
     _write_json(path, snapshot)
     logger.info("Metrics snapshot written: %s", path)
+
 
 
 # ---------------------------------------------------------------------------
