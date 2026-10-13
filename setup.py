@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="fts-testframework",
-    version="0.1.0",
+    version="0.2.0",
     description="Production-grade FTS3 REST transfer test framework",
     packages=find_packages(exclude=["tests", "tests.*"]),
     python_requires=">=3.6",
