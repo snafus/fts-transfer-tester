@@ -153,14 +153,17 @@ def compute(file_records, retry_records, config, run_id):
 
     # --- Step 5: retry stats ---
     total_retries = len(retry_records)
-    files_with_retries = len(set(r["file_id"] for r in retry_records))
+    files_with_retries = len(set(_retry_file_key(r) for r in retry_records))
     # retry_rate denominator is total (all file records, including NOT_USED and
     # STAGING) so the rate reflects the overall campaign, not just eligible files.
     retry_rate = float(files_with_retries) / total if total > 0 else 0.0
     retry_dist = _retry_distribution(retry_records)
 
     # --- Step 6: concurrency ---
-    concurrency_timeline = _estimate_concurrency(finished)
+    # Failed/canceled transfers occupied a slot while they ran, so they count
+    # towards concurrency; throughput and bytes stay finished-only.
+    unsuccessful = failed + canceled
+    concurrency_timeline = _estimate_concurrency(finished, unsuccessful)
     if concurrency_timeline:
         peak_concurrency = max(b["active"] for b in concurrency_timeline)
         active_vals = [b["active"] for b in concurrency_timeline]
@@ -174,7 +177,7 @@ def compute(file_records, retry_records, config, run_id):
 
     # --- Step 8: throughput/concurrency timeseries ---
     bucket_width_s = config.get("output", {}).get("timeseries_bucket_s", 60)
-    timeseries = _compute_timeseries(finished, bucket_width_s)
+    timeseries = _compute_timeseries(finished, bucket_width_s, unsuccessful)
 
     # Peak is taken over full-width buckets only: a short trailing bucket
     # gives a noisy rate.  The campaign aggregate averages over a window at
@@ -388,21 +391,27 @@ def _aggregate_throughput(finished_files):
 # Concurrency estimation
 # ---------------------------------------------------------------------------
 
-def _estimate_concurrency(finished_files, bucket_width_s=1):
-    # type: (list, int) -> list
+def _estimate_concurrency(finished_files, unsuccessful_files=(), bucket_width_s=1):
+    # type: (list, object, int) -> list
     """Estimate per-second transfer concurrency, throughput, and bytes in-flight.
 
     Each bucket represents a ``bucket_width_s``-second interval.  Three
     quantities are tracked using difference-array / prefix-sum (O(N + T)):
 
-    - ``active``: number of transfers with ``start_epoch <= t < finish_epoch``.
-    - ``bytes_in_flight``: sum of ``filesize`` for active transfers.
+    - ``active``: number of transfers with ``start_epoch <= t < finish_epoch``,
+      including *unsuccessful_files*.
+    - ``bytes_in_flight``: sum of ``filesize`` for active finished transfers.
     - ``throughput_bytes_s``: aggregate bytes/s using the constant-rate model
       (each transfer contributes ``filesize / wall_duration`` uniformly across
       the seconds it spans).
 
+    The timeline covers ``[t_min, t_max)``: no transfer is active at the
+    final finish second, so it is not a bucket.
+
     Args:
         finished_files (list[dict]): FINISHED FileRecord dicts.
+        unsuccessful_files (list[dict]): FAILED/CANCELED FileRecord dicts;
+            counted in ``active`` only.
         bucket_width_s (int): Bucket width in seconds.  Default 1.
 
     Returns:
@@ -413,15 +422,17 @@ def _estimate_concurrency(finished_files, bucket_width_s=1):
     """
     # Collect (start_epoch, finish_epoch, filesize, rate) per file.
     # rate is None for files with zero wall duration (excluded from throughput).
+    # Unsuccessful files contribute filesize 0 and rate None (active only).
     timed = []
-    for f in finished_files:
+    for f, finished in ([(f, True) for f in finished_files]
+                        + [(f, False) for f in unsuccessful_files]):
         s = _parse_iso(f.get("start_time") or "")
         e = _parse_iso(f.get("finish_time") or "")
         if s is None or e is None:
             continue
         s_i = int(_epoch(s))
         e_i = int(_epoch(e))
-        filesize = int(f.get("filesize") or 0)
+        filesize = int(f.get("filesize") or 0) if finished else 0
         wall_s = e_i - s_i
         rate = float(filesize) / wall_s if (wall_s > 0 and filesize > 0) else None
         timed.append((s_i, e_i, filesize, rate))
@@ -432,7 +443,8 @@ def _estimate_concurrency(finished_files, bucket_width_s=1):
     t_min = min(s for s, _, _, _ in timed)
     t_max = max(e for _, e, _, _ in timed)
 
-    span = t_max - t_min + 1
+    # Half-open [t_min, t_max); keep one bucket when every file is sub-second.
+    span = max(t_max - t_min, 1)
     sentinel = span + 1
 
     diff_active = [0] * sentinel
@@ -485,8 +497,8 @@ def _estimate_concurrency(finished_files, bucket_width_s=1):
 # Throughput / concurrency timeseries
 # ---------------------------------------------------------------------------
 
-def _compute_timeseries(finished_files, bucket_width_s):
-    # type: (list, int) -> list
+def _compute_timeseries(finished_files, bucket_width_s, unsuccessful_files=()):
+    # type: (list, int, object) -> list
     """Compute a per-bucket throughput and concurrency timeseries.
 
     Each bucket covers ``bucket_width_s`` seconds.  For each finished file,
@@ -497,13 +509,17 @@ def _compute_timeseries(finished_files, bucket_width_s):
     bucket is truncated at the final file's finish time, so its span may be
     shorter than ``bucket_width_s``.
 
-    Files with zero filesize, zero/negative wall duration, or unparseable
-    timestamps are excluded.
+    *unsuccessful_files* (FAILED/CANCELED) count towards ``active_transfers``
+    but contribute no bytes.
+
+    Files with zero/negative wall duration or unparseable timestamps are
+    excluded, as are finished files with zero filesize.
 
     Args:
         finished_files (list[dict]): FINISHED FileRecord dicts with computed
             ``wall_duration_s`` (set by ``_compute_file_metrics``).
         bucket_width_s (int): Bucket width in seconds.
+        unsuccessful_files (list[dict]): FAILED/CANCELED FileRecord dicts.
 
     Returns:
         list[dict]: One dict per bucket with keys ``bucket_start`` (ISO8601),
@@ -516,13 +532,17 @@ def _compute_timeseries(finished_files, bucket_width_s):
 
     # Build list of (start_epoch, end_epoch, rate_bytes_per_s)
     timed = []
-    for f in finished_files:
+    for f, finished in ([(f, True) for f in finished_files]
+                        + [(f, False) for f in unsuccessful_files]):
         s = _parse_iso(f.get("start_time") or "")
         e = _parse_iso(f.get("finish_time") or "")
         if s is None or e is None:
             continue
         wall_s = (e - s).total_seconds()
         if wall_s <= 0:
+            continue
+        if not finished:
+            timed.append((_epoch(s), _epoch(e), 0.0))
             continue
         filesize = f.get("filesize") or 0
         if filesize <= 0:
@@ -578,6 +598,9 @@ def _retry_distribution(retry_records):
     # type: (list) -> dict
     """Count retry records by file (how many retries each file had).
 
+    Files are keyed by ``_retry_file_key``, so FTS3 retries from every
+    framework retry round are summed per logical file.
+
     Returns:
         dict: Mapping of retry-count-as-string → number-of-files with that
             count.  E.g. ``{"0": 5, "1": 2, "2": 1}`` means 5 files had
@@ -588,14 +611,26 @@ def _retry_distribution(retry_records):
     """
     counts = {}  # type: dict
     for rec in retry_records:
-        fid = rec["file_id"]
-        counts[fid] = counts.get(fid, 0) + 1
+        key = _retry_file_key(rec)
+        counts[key] = counts.get(key, 0) + 1
 
     dist = {}  # type: dict
     for count in counts.values():
         key = str(count)
         dist[key] = dist.get(key, 0) + 1
     return dist
+
+
+def _retry_file_key(rec):
+    # type: (dict) -> object
+    """Identify the logical file a retry record belongs to.
+
+    A framework retry resubmits the file in a new job with a new FTS3
+    ``file_id``; ``source_surl`` is stable across rounds (the inventory
+    forbids duplicates).  Records harvested before ``source_surl`` was
+    recorded fall back to ``file_id``.
+    """
+    return rec.get("source_surl") or rec["file_id"]
 
 
 # ---------------------------------------------------------------------------

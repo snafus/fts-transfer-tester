@@ -103,7 +103,8 @@ def harvest_all(subjobs, fts_client, run_id=None, runs_dir=None):
         # -------------------------------------------------------------------
         for fr in file_records:
             file_id = fr["file_id"]
-            retries = _harvest_retries(fts_client, job_id, file_id, run_id, runs_dir)
+            retries = _harvest_retries(fts_client, job_id, file_id, run_id, runs_dir,
+                                       source_surl=fr["source_surl"])
             all_retry_records.extend(retries)
 
         # -------------------------------------------------------------------
@@ -220,8 +221,9 @@ def _normalise_file_record(item, job_id, chunk_index, retry_round):
     }
 
 
-def _harvest_retries(fts_client, job_id, file_id, run_id=None, runs_dir=None):
-    # type: (object, str, int, object, object) -> list
+def _harvest_retries(fts_client, job_id, file_id, run_id=None, runs_dir=None,
+                     source_surl=""):
+    # type: (object, str, int, object, object, str) -> list
     """Fetch retry history for a single file.
 
     Args:
@@ -230,6 +232,9 @@ def _harvest_retries(fts_client, job_id, file_id, run_id=None, runs_dir=None):
         file_id (int): FTS3 file ID.
         run_id (str): When provided, raw response is written to disk first.
         runs_dir (str): Base directory for run outputs.
+        source_surl (str): Normalised source URL of the file, recorded on
+            each retry so retries can be grouped per logical file across
+            framework retry rounds.
 
     Returns:
         list[dict]: ``RetryRecord`` dicts (empty list if no retries).
@@ -253,6 +258,7 @@ def _harvest_retries(fts_client, job_id, file_id, run_id=None, runs_dir=None):
         record = {
             "job_id": job_id,
             "file_id": file_id,
+            "source_surl": source_surl,
             "attempt": int(item.get("attempt") or 0),
             "datetime": item.get("datetime") or "",
             "reason": item.get("reason") or "",

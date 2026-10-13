@@ -343,6 +343,27 @@ class TestEstimateConcurrency:
         tl_wide = _estimate_concurrency([f], bucket_width_s=5)
         assert len(tl_wide) < len(tl_default)
 
+    def test_final_finish_second_not_a_bucket(self):
+        # [0, 42) → 42 buckets, all active; no trailing zero bucket
+        f = _file(start_time="2026-01-01T00:00:00",
+                  finish_time="2026-01-01T00:00:42")
+        timeline = _estimate_concurrency([f])
+        assert len(timeline) == 42
+        assert all(b["active"] == 1 for b in timeline)
+
+    def test_unsuccessful_files_count_as_active_only(self):
+        ok = _file(file_id=1, filesize=100,
+                   start_time="2026-01-01T00:00:00",
+                   finish_time="2026-01-01T00:00:10")
+        bad = _file(file_id=2, file_state="FAILED", filesize=5000,
+                    start_time="2026-01-01T00:00:00",
+                    finish_time="2026-01-01T00:00:10")
+        timeline = _estimate_concurrency([ok], [bad])
+        assert max(b["active"] for b in timeline) == 2
+        for b in timeline:
+            assert b["bytes_in_flight"] == 100
+            assert b["throughput_bytes_s"] == pytest.approx(10.0)
+
     def test_zero_duration_files_all_buckets_zero_active(self):
         # start == finish → half-open interval means no bucket has active > 0
         f = _file(start_time="2026-01-01T00:00:05",
@@ -437,6 +458,30 @@ class TestEstimateConcurrency:
 # ---------------------------------------------------------------------------
 
 class TestRetryDistribution:
+    def test_grouped_by_source_surl_across_rounds(self):
+        # Same logical file, new FTS3 file_id after a framework resubmission
+        recs = [{"file_id": 1, "source_surl": "https://src/a"},
+                {"file_id": 7, "source_surl": "https://src/a"},
+                {"file_id": 2, "source_surl": "https://src/b"}]
+        assert _retry_distribution(recs) == {"2": 1, "1": 1}
+
+    def test_falls_back_to_file_id_without_source_surl(self):
+        recs = [{"file_id": 1}, {"file_id": 1}, {"file_id": 2}]
+        assert _retry_distribution(recs) == {"2": 1, "1": 1}
+
+    def test_compute_retry_rate_across_framework_rounds(self):
+        # Regression: one logical file retried in two rounds gave
+        # files_with_retries=2, retry_rate=2.0.
+        f = _file(file_id=7)
+        f["source_surl"] = "https://src/a"
+        recs = [{"file_id": 1, "source_surl": "https://src/a"},
+                {"file_id": 7, "source_surl": "https://src/a"}]
+        snap = compute([f], recs, _config(), "r")
+        assert snap["total_retries"] == 2
+        assert snap["files_with_retries"] == 1
+        assert snap["retry_rate"] == pytest.approx(1.0)
+        assert snap["retry_distribution"] == {"2": 1}
+
     def test_empty_returns_empty_dict(self):
         assert _retry_distribution([]) == {}
 
@@ -913,6 +958,14 @@ class TestComputeTimeseries:
         for b in active:
             assert b["aggregate_throughput_bytes_s"] == pytest.approx(1.0)
 
+    def test_unsuccessful_files_counted_active_without_bytes(self):
+        ok = self._f("2026-01-01T00:00:00", "2026-01-01T00:00:30", filesize=300)
+        bad = self._f("2026-01-01T00:00:00", "2026-01-01T00:00:30", filesize=9999)
+        buckets = _compute_timeseries([ok], 60, [bad])
+        assert len(buckets) == 1
+        assert buckets[0]["active_transfers"] == 2
+        assert buckets[0]["aggregate_throughput_bytes_s"] == pytest.approx(10.0)
+
     def test_compute_returns_timeseries_key(self):
         cfg = _config()
         cfg["output"] = {"timeseries_bucket_s": 60}
@@ -922,6 +975,26 @@ class TestComputeTimeseries:
         snap = compute([f], [], cfg, "r")
         assert "timeseries" in snap
         assert isinstance(snap["timeseries"], list)
+
+    def test_compute_concurrency_includes_failed_transfers(self):
+        # Regression: a concurrent FAILED transfer was ignored (peak 1).
+        cfg = _config()
+        ok = _file(file_id=1, start_time="2026-01-01T00:00:00",
+                   finish_time="2026-01-01T00:00:42")
+        bad = _file(file_id=2, file_state="FAILED",
+                    start_time="2026-01-01T00:00:00",
+                    finish_time="2026-01-01T00:00:40")
+        snap = compute([ok, bad], [], cfg, "r")
+        assert snap["peak_concurrency"] == 2
+        # throughput still finished-only
+        assert snap["aggregate_throughput_bytes_per_s"] == pytest.approx(1024 / 42.0)
+
+    def test_compute_mean_concurrency_single_file_is_one(self):
+        # Regression: a trailing empty bucket gave 42/43.
+        f = _file(start_time="2026-01-01T00:00:00",
+                  finish_time="2026-01-01T00:00:42")
+        snap = compute([f], [], _config(), "r")
+        assert snap["mean_concurrency"] == pytest.approx(1.0)
 
     def test_peak_not_below_aggregate_when_campaign_shorter_than_bucket(self):
         # Regression: a 42 s single-file campaign with 60 s buckets reported
