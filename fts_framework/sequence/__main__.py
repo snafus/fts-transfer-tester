@@ -9,6 +9,7 @@ Usage::
     fts-sequence params.yaml --resume sequences/20260324_abc123_scale_test/
     fts-sequence --rerun-failed sequences/20260324_abc123_scale_test/
     fts-sequence --cancel-jobs sequences/20260324_abc123_scale_test/
+    fts-sequence --recompute sequences/20260324_abc123_scale_test/
     fts-sequence params.yaml --runs-dir /data/runs --log-level DEBUG
 
 Token resolution follows the same five-level priority as ``fts-run``; see
@@ -20,6 +21,7 @@ import logging
 import os
 import sys
 
+from fts_framework import runner as fts_runner
 from fts_framework.auth import x509 as x509_auth
 from fts_framework.sequence import state as seq_state
 from fts_framework.sequence import reporter as seq_reporter
@@ -76,6 +78,13 @@ def main():
         default=None,
         help="Regenerate summary reports from an existing sequence directory "
              "(safe to run mid-sequence)",
+    )
+    mode.add_argument(
+        "--recompute",
+        metavar="SEQUENCE_DIR",
+        default=None,
+        help="Recompute every completed trial's metrics from its stored "
+             "normalised records (offline), then regenerate summary reports",
     )
     mode.add_argument(
         "--skip-from-case",
@@ -277,6 +286,41 @@ def main():
             ", {} error(s)".format(err) if err else "",
         ))
         sys.exit(0 if err == 0 else 1)
+
+    # --recompute: recompute each completed trial's snapshot, then --report.
+    if args.recompute:
+        seq_dir = args.recompute
+        try:
+            state = seq_state.load(seq_dir)
+        except Exception as exc:
+            log.error("Failed to read sequence state from %s: %s", seq_dir, exc)
+            sys.exit(1)
+        runs_dir_val = (
+            args.runs_dir
+            or state.get("runs_dir")
+            or os.path.join(seq_dir, "runs")
+        )
+        n_ok = n_failed = 0
+        for case in state["cases"]:
+            for trial in case["trials"]:
+                run_id = trial.get("run_id")
+                if trial["status"] != seq_state.COMPLETED or not run_id:
+                    continue
+                try:
+                    fts_runner.recompute_run(run_id, runs_dir=runs_dir_val,
+                                             console=False)
+                    n_ok += 1
+                except Exception as exc:
+                    log.error("Recompute failed for run %s: %s", run_id, exc)
+                    n_failed += 1
+        log.info("Recomputed %d run(s), %d failed", n_ok, n_failed)
+        try:
+            seq_reporter.generate_summary(seq_dir, state, runs_dir=runs_dir_val)
+        except Exception as exc:
+            log.error("Failed to generate report for %s: %s", seq_dir, exc,
+                      exc_info=True)
+            sys.exit(1)
+        sys.exit(1 if n_failed else 0)
 
     # --report: regenerate summary reports without running anything.
     if args.report:
