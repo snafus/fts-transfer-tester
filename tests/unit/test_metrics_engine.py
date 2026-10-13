@@ -522,7 +522,7 @@ class TestCompute:
             "success_rate", "failure_rate", "threshold_passed",
             "campaign_start", "campaign_end", "campaign_wall_s",
             "throughput_mean", "throughput_stddev",
-            "throughput_p50", "throughput_p90",
+            "throughput_p10", "throughput_p50", "throughput_p90",
             "throughput_p95", "throughput_p99", "throughput_max",
             "aggregate_throughput_bytes_per_s",
             "duration_mean_s", "duration_stddev_s",
@@ -585,6 +585,8 @@ class TestCompute:
         assert snap["throughput_mean"] is not None
         assert snap["throughput_p50"] is not None
         assert snap["throughput_max"] is not None
+        # [100..500], k = 4 * 0.1 = 0.4 → 100 + 0.4 * 100
+        assert snap["throughput_p10"] == pytest.approx(140.0)
 
     def test_throughput_none_when_no_finished(self):
         files = [_file(file_state="FAILED", throughput=0.0)]
@@ -822,13 +824,14 @@ class TestComputeTimeseries:
 
     def test_single_file_single_bucket(self):
         # 100-byte file transferred in 10 s → rate = 10 B/s
-        # Fits entirely in one 60 s bucket → agg = 10*10/60 ≈ 1.667 B/s
+        # Fits in one 60 s bucket truncated to 10 s → agg = 100/10 = 10 B/s
         f = self._f("2026-01-01T00:00:00", "2026-01-01T00:00:10", filesize=100)
         buckets = _compute_timeseries([f], 60)
         assert len(buckets) == 1
         b = buckets[0]
         assert b["active_transfers"] == 1
-        assert b["aggregate_throughput_bytes_s"] == pytest.approx(100.0 / 60.0)
+        assert b["bucket_span_s"] == pytest.approx(10.0)
+        assert b["aggregate_throughput_bytes_s"] == pytest.approx(10.0)
 
     def test_bucket_start_end_iso_format(self):
         f = self._f("2026-01-01T00:00:00", "2026-01-01T00:00:10", filesize=60)
@@ -858,23 +861,27 @@ class TestComputeTimeseries:
         buckets = _compute_timeseries([f1, f2], 60)
         assert len(buckets) == 1
         assert buckets[0]["active_transfers"] == 2
-        # Each contributes 300/30 B/s * 30 s = 300 B; total 600 B / 60 s = 10 B/s
-        assert buckets[0]["aggregate_throughput_bytes_s"] == pytest.approx(10.0)
+        # Each contributes 300/30 B/s * 30 s = 300 B; total 600 B over a
+        # bucket truncated to 30 s = 20 B/s
+        assert buckets[0]["aggregate_throughput_bytes_s"] == pytest.approx(20.0)
 
     def test_file_spanning_two_buckets(self):
         # Anchor t_min with an early file so that f2 straddles a bucket boundary.
         # f1: 00:00:00 → 00:00:10 (t_min anchor, small)
         # f2: 00:00:50 → 00:01:20 (straddles the 60 s boundary)
         #   rate = 300 B / 30 s = 10 B/s
-        #   bucket 0 overlap: 60-50 = 10 s → 10*10/60 ≈ 1.667 B/s
-        #   bucket 1 overlap: 80-60 = 20 s → 10*20/60 ≈ 3.333 B/s
+        #   bucket 0 overlap: 60-50 = 10 s → (10 + 10*10)/60 ≈ 1.833 B/s
+        #   bucket 1 overlap: 80-60 = 20 s, span truncated to 20 s → 10 B/s
         f1 = self._f("2026-01-01T00:00:00", "2026-01-01T00:00:10", filesize=10)
         f2 = self._f("2026-01-01T00:00:50", "2026-01-01T00:01:20", filesize=300)
         buckets = _compute_timeseries([f1, f2], 60)
         assert len(buckets) >= 2
         assert buckets[0]["active_transfers"] >= 1
         assert buckets[1]["active_transfers"] == 1
-        assert buckets[1]["aggregate_throughput_bytes_s"] == pytest.approx(300.0 / 30 * 20 / 60.0)
+        assert buckets[0]["bucket_span_s"] == pytest.approx(60.0)
+        assert buckets[0]["aggregate_throughput_bytes_s"] == pytest.approx(110.0 / 60.0)
+        assert buckets[1]["bucket_span_s"] == pytest.approx(20.0)
+        assert buckets[1]["aggregate_throughput_bytes_s"] == pytest.approx(10.0)
 
     def test_zero_filesize_excluded(self):
         f = self._f("2026-01-01T00:00:00", "2026-01-01T00:00:10", filesize=0)
@@ -915,3 +922,46 @@ class TestComputeTimeseries:
         snap = compute([f], [], cfg, "r")
         assert "timeseries" in snap
         assert isinstance(snap["timeseries"], list)
+
+    def test_peak_not_below_aggregate_when_campaign_shorter_than_bucket(self):
+        # Regression: a 42 s single-file campaign with 60 s buckets reported
+        # peak = bytes/60 (below aggregate = bytes/42).  With no full bucket
+        # the peak falls back to the campaign aggregate.
+        cfg = _config()
+        cfg["output"] = {"timeseries_bucket_s": 60}
+        f = _file(filesize=4200,
+                  start_time="2026-01-01T00:00:00",
+                  finish_time="2026-01-01T00:00:42")
+        snap = compute([f], [], cfg, "r")
+        assert snap["aggregate_throughput_bytes_per_s"] == pytest.approx(100.0)
+        assert snap["peak_aggregate_throughput_bytes_per_s"] == pytest.approx(100.0)
+
+    def test_peak_ignores_short_trailing_bucket(self):
+        # f1: 0-60 s at 10 B/s fills bucket 0 (full, 10 B/s).
+        # f2: 60-61 s, 1000 B → trailing 1 s bucket at 1000 B/s: excluded.
+        # Aggregate = 1600/61 ≈ 26.2 B/s exceeds the full bucket, so wins.
+        cfg = _config()
+        cfg["output"] = {"timeseries_bucket_s": 60}
+        f1 = _file(file_id=1, filesize=600,
+                   start_time="2026-01-01T00:00:00",
+                   finish_time="2026-01-01T00:01:00")
+        f2 = _file(file_id=2, filesize=1000,
+                   start_time="2026-01-01T00:01:00",
+                   finish_time="2026-01-01T00:01:01")
+        snap = compute([f1, f2], [], cfg, "r")
+        assert snap["peak_aggregate_throughput_bytes_per_s"] == pytest.approx(1600.0 / 61)
+
+    def test_peak_uses_full_bucket_above_aggregate(self):
+        # 30 s buckets.  f1: 0-30 s, 3000 B (100 B/s); f2: 30-90 s, 600 B
+        # (10 B/s).  Aggregate = 3600/90 = 40 B/s; peak bucket = 100 B/s.
+        cfg = _config()
+        cfg["output"] = {"timeseries_bucket_s": 30}
+        f1 = _file(file_id=1, filesize=3000,
+                   start_time="2026-01-01T00:00:00",
+                   finish_time="2026-01-01T00:00:30")
+        f2 = _file(file_id=2, filesize=600,
+                   start_time="2026-01-01T00:00:30",
+                   finish_time="2026-01-01T00:01:30")
+        snap = compute([f1, f2], [], cfg, "r")
+        assert snap["aggregate_throughput_bytes_per_s"] == pytest.approx(40.0)
+        assert snap["peak_aggregate_throughput_bytes_per_s"] == pytest.approx(100.0)

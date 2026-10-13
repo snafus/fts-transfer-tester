@@ -72,6 +72,7 @@ def _default_snapshot(**overrides):
         "failed":           5,
         "success_rate":     0.95,
         "throughput_mean":  50e6,   # 50 MB/s in bytes/s
+        "throughput_p10":   40e6,
         "throughput_p50":   48e6,
         "throughput_p90":   60e6,
         "throughput_stddev": 5e6,
@@ -220,6 +221,7 @@ class TestMarkdownReport:
             with open(os.path.join(tmp, "reports", "summary.md")) as fh:
                 content = fh.read()
         assert "Results by Case" in content
+        assert "TP p10 (MB/s)" in content
 
     def test_individual_runs_section_present(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -413,6 +415,7 @@ class TestConsoleSummary:
         out = self._run(state, capsys=capsys)
         assert "Succ Rate" in out
         assert "Agg TP MB/s" in out
+        assert "p10 MB/s" in out
         assert "Wall (s)" in out
 
     def test_param_column_shown(self, capsys):

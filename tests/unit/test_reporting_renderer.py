@@ -38,6 +38,7 @@ def _base_snapshot(**overrides):
         "failure_rate": 0.0303,
         "threshold_passed": True,
         "throughput_mean": 50e6,
+        "throughput_p10": 30e6,
         "throughput_p50": 48e6,
         "throughput_p90": 70e6,
         "throughput_p95": 80e6,
@@ -174,6 +175,10 @@ class TestRenderConsole:
         out = render_console(_base_snapshot(), _base_config())
         assert "MB/s" in out or "GB/s" in out
 
+    def test_throughput_p10_shown(self):
+        out = render_console(_base_snapshot(), _base_config())
+        assert "p10     : 30.0 MB/s" in out
+
     def test_no_throughput_message_when_none(self):
         snap = _base_snapshot(
             throughput_mean=None, throughput_p50=None,
@@ -262,6 +267,10 @@ class TestRenderMarkdown:
     def test_section_throughput(self):
         out = render_markdown(_base_snapshot(), _base_config())
         assert "## 3. Throughput Statistics" in out
+
+    def test_throughput_p10_row(self):
+        out = render_markdown(_base_snapshot(), _base_config())
+        assert "| p10 | 30.0 MB/s |" in out
 
     def test_section_duration(self):
         out = render_markdown(_base_snapshot(), _base_config())
