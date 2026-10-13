@@ -150,6 +150,7 @@ def render_console(snapshot, config):
 
     _add(" Throughput (agent-reported)")
     tp_mean = snapshot.get("throughput_mean")
+    tp_p10 = snapshot.get("throughput_p10")
     tp_p50 = snapshot.get("throughput_p50")
     tp_p90 = snapshot.get("throughput_p90")
     tp_p95 = snapshot.get("throughput_p95")
@@ -158,6 +159,7 @@ def render_console(snapshot, config):
         tp_sd = snapshot.get("throughput_stddev")
         if tp_sd is not None:
             _add("   StdDev  : {}".format(_fmt_bytes_per_sec(tp_sd)))
+        _add("   p10     : {}".format(_fmt_bytes_per_sec(tp_p10)))
         _add("   p50     : {}".format(_fmt_bytes_per_sec(tp_p50)))
         _add("   p90     : {}".format(_fmt_bytes_per_sec(tp_p90)))
         _add("   p95     : {}".format(_fmt_bytes_per_sec(tp_p95)))
@@ -289,6 +291,7 @@ def render_markdown(snapshot, config, subjobs=None):
         tp_sd = snapshot.get("throughput_stddev")
         if tp_sd is not None:
             _add("| StdDev | {} |".format(_fmt_bytes_per_sec(tp_sd)))
+        _add("| p10 | {} |".format(_fmt_bytes_per_sec(snapshot.get("throughput_p10"))))
         _add("| p50 | {} |".format(_fmt_bytes_per_sec(snapshot.get("throughput_p50"))))
         _add("| p90 | {} |".format(_fmt_bytes_per_sec(snapshot.get("throughput_p90"))))
         _add("| p95 | {} |".format(_fmt_bytes_per_sec(snapshot.get("throughput_p95"))))

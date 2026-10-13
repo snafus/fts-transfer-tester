@@ -120,13 +120,15 @@ def compute(file_records, retry_records, config, run_id):
         throughput_mean = statistics.mean(throughput_vals)
         throughput_stddev = (statistics.stdev(throughput_vals)
                              if len(throughput_vals) >= 2 else None)
+        throughput_p10 = _percentile(throughput_vals, 10)
         throughput_p50 = _percentile(throughput_vals, 50)
         throughput_p90 = _percentile(throughput_vals, 90)
         throughput_p95 = _percentile(throughput_vals, 95)
         throughput_p99 = _percentile(throughput_vals, 99)
         throughput_max = max(throughput_vals)
     else:
-        throughput_mean = throughput_stddev = throughput_p50 = throughput_p90 = None
+        throughput_mean = throughput_stddev = throughput_p10 = None
+        throughput_p50 = throughput_p90 = None
         throughput_p95 = throughput_p99 = throughput_max = None
 
     agg_tp = _aggregate_throughput(finished)
@@ -174,9 +176,16 @@ def compute(file_records, retry_records, config, run_id):
     bucket_width_s = config.get("output", {}).get("timeseries_bucket_s", 60)
     timeseries = _compute_timeseries(finished, bucket_width_s)
 
+    # Peak is taken over full-width buckets only: a short trailing bucket
+    # gives a noisy rate.  The campaign aggregate averages over a window at
+    # least as long as any full bucket, so the true peak cannot be below it;
+    # it is also the only value available when the campaign is shorter than
+    # one bucket.
     tp_buckets = [b["aggregate_throughput_bytes_s"] for b in timeseries
-                  if b["aggregate_throughput_bytes_s"] > 0]
-    peak_aggregate_throughput = max(tp_buckets) if tp_buckets else None
+                  if b["aggregate_throughput_bytes_s"] > 0
+                  and b["bucket_span_s"] >= bucket_width_s]
+    peak_candidates = tp_buckets + ([agg_tp] if agg_tp else [])
+    peak_aggregate_throughput = max(peak_candidates) if peak_candidates else None
 
     max_files = config.get("transfer", {}).get("max_files")
 
@@ -224,6 +233,7 @@ def compute(file_records, retry_records, config, run_id):
         # Throughput
         "throughput_mean": throughput_mean,
         "throughput_stddev": throughput_stddev,
+        "throughput_p10": throughput_p10,
         "throughput_p50": throughput_p50,
         "throughput_p90": throughput_p90,
         "throughput_p95": throughput_p95,
@@ -483,7 +493,9 @@ def _compute_timeseries(finished_files, bucket_width_s):
     a constant transfer rate is assumed: ``rate = filesize / wall_duration``.
     The file's contribution to each bucket it overlaps is
     ``rate * overlap_seconds``.  Aggregate throughput for the bucket is the
-    total bytes attributed to it divided by ``bucket_width_s``.
+    total bytes attributed to it divided by the bucket's span: the last
+    bucket is truncated at the final file's finish time, so its span may be
+    shorter than ``bucket_width_s``.
 
     Files with zero filesize, zero/negative wall duration, or unparseable
     timestamps are excluded.
@@ -495,8 +507,9 @@ def _compute_timeseries(finished_files, bucket_width_s):
 
     Returns:
         list[dict]: One dict per bucket with keys ``bucket_start`` (ISO8601),
-            ``bucket_end`` (ISO8601), ``active_transfers`` (int), and
-            ``aggregate_throughput_bytes_s`` (float).  Empty list if no
+            ``bucket_end`` (ISO8601, nominal full-width end),
+            ``bucket_span_s`` (float, covered seconds), ``active_transfers``
+            (int), and ``aggregate_throughput_bytes_s`` (float).  Empty list if no
             eligible files exist.
     """
     W = float(bucket_width_s)
@@ -546,11 +559,13 @@ def _compute_timeseries(finished_files, bucket_width_s):
         bucket_t1 = bucket_t0 + W
         dt0 = epoch_base + timedelta(seconds=bucket_t0)
         dt1 = epoch_base + timedelta(seconds=bucket_t1)
+        span = min(W, t_max - bucket_t0)
         buckets.append({
             "bucket_start": dt0.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "bucket_end": dt1.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "bucket_span_s": span,
             "active_transfers": concurrency[b],
-            "aggregate_throughput_bytes_s": agg_bytes[b] / W,
+            "aggregate_throughput_bytes_s": agg_bytes[b] / span if span > 0 else 0.0,
         })
     return buckets
 
