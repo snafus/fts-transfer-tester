@@ -141,6 +141,26 @@ class TestMergeFileRecords:
         result = _merge_file_records(existing, [])
         assert all(r["file_state"] == "FAILED" for r in result)
 
+    def test_padded_duplicate_source_only_matching_destination_replaced(self):
+        from fts_framework.runner import _merge_file_records
+        existing = [
+            {"source_surl": "s/f1", "dest_surl": "d/a", "origin_dest_surl": "d/a",
+             "file_state": "FAILED"},
+            {"source_surl": "s/f1", "dest_surl": "d/b", "origin_dest_surl": "d/b",
+             "file_state": "FINISHED", "file_id": 2},
+        ]
+        new = [{"source_surl": "s/f1", "dest_surl": "d/a-new", "origin_dest_surl": "d/a",
+                "file_state": "FINISHED", "file_id": 3}]
+        result = _merge_file_records(existing, new)
+        assert [r.get("file_id") for r in result] == [3, 2]
+
+    def test_stamp_origin_identity_and_remint(self):
+        from fts_framework.runner import _stamp_origin
+        recs = [{"source_surl": "s/f1", "dest_surl": "d/a"},
+                {"source_surl": "s/f1", "dest_surl": "d/a-new"}]
+        _stamp_origin(recs, {("s/f1", "d/a-new"): "d/a"})
+        assert [r["origin_dest_surl"] for r in recs] == ["d/a", "d/a"]
+
     def test_empty_existing_returns_empty(self):
         from fts_framework.runner import _merge_file_records
         result = _merge_file_records([], [self._rec("s1", "FINISHED")])
@@ -1220,6 +1240,94 @@ class TestRunCampaign:
         src, dst = retry_mapping[0]
         assert src == "https://src/f1"
         assert dst not in ("https://dst/f1-a", "https://dst/f1-b")
+
+
+class TestPaddedCampaignTransferIdentity:
+    """max_files padding repeats a source PFN with distinct destinations.
+    Framework retry must resubmit only the failed occurrence and merge its
+    new record back onto that occurrence alone, in every naming mode."""
+
+    def _run(self, tmp_path, monkeypatch, naming):
+        import fts_framework.runner as runner_mod
+        import fts_framework.fts.collector as collector_mod
+        import fts_framework.metrics.engine as engine_mod
+        from fts_framework.metrics.engine import _retry_distribution
+
+        _install_run_campaign_mocks(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            "fts_framework.destination.planner.plan",
+            lambda pfns, config: [("s/f1", "d/a"), ("s/f1", "d/b")],
+        )
+
+        submitted = []
+        mocked_submit = runner_mod._submit_chunks
+
+        def tracking_submit(mapping, checksums, config, run_id, retry_round, client, runs_dir):
+            submitted.append(list(mapping))
+            return mocked_submit(mapping, checksums, config, run_id, retry_round, client, runs_dir)
+        monkeypatch.setattr(runner_mod, "_submit_chunks", tracking_submit)
+
+        def harvest(subjobs, client, run_id=None, runs_dir=None):
+            if len(submitted) == 1:
+                # Round 0: (f1 -> a) FAILED after one FTS3 retry; (f1 -> b) FINISHED
+                files = [
+                    {"file_id": 1, "source_surl": "s/f1", "dest_surl": "d/a",
+                     "file_state": "FAILED"},
+                    {"file_id": 2, "source_surl": "s/f1", "dest_surl": "d/b",
+                     "file_state": "FINISHED"},
+                ]
+                retries = [{"file_id": 1, "source_surl": "s/f1", "dest_surl": "d/a"}]
+                return files, retries, []
+            # Round 1: whatever was resubmitted FINISHED after one FTS3 retry
+            files, retries = [], []
+            for i, (src, dst) in enumerate(submitted[-1]):
+                files.append({"file_id": 10 + i, "source_surl": src,
+                              "dest_surl": dst, "file_state": "FINISHED"})
+                retries.append({"file_id": 10 + i, "source_surl": src, "dest_surl": dst})
+            return files, retries, []
+        monkeypatch.setattr(collector_mod, "harvest_all", harvest)
+
+        seen = {}
+
+        def capture(file_records, retry_records, config, run_id):
+            seen["files"] = file_records
+            seen["dist"] = _retry_distribution(retry_records)
+            return {"threshold_passed": True, "run_id": run_id}
+        monkeypatch.setattr(engine_mod, "compute", capture)
+
+        config = dict(_base_config())
+        config["retry"] = {"framework_retry_max": 1}
+        config["transfer"] = dict(config["transfer"], destination_naming=naming)
+        from fts_framework.runner import run_campaign
+        run_campaign(config, runs_dir=str(tmp_path))
+        return submitted, seen
+
+    @pytest.mark.parametrize("naming", ["sequential", "uuid", "date"])
+    def test_only_failed_occurrence_resubmitted(self, tmp_path, monkeypatch, naming):
+        submitted, _ = self._run(tmp_path, monkeypatch, naming)
+        assert len(submitted[1]) == 1
+        src, dst = submitted[1][0]
+        assert src == "s/f1"
+        if naming == "sequential":
+            assert dst == "d/a"
+        else:
+            assert dst not in ("d/a", "d/b")
+
+    @pytest.mark.parametrize("naming", ["sequential", "uuid", "date"])
+    def test_merge_replaces_only_failed_occurrence(self, tmp_path, monkeypatch, naming):
+        # Regression: merging on source alone duplicated the round-1 record
+        # and lost the (f1 -> b) FINISHED record.
+        _, seen = self._run(tmp_path, monkeypatch, naming)
+        files = seen["files"]
+        assert [f["file_id"] for f in files] == [10, 2]
+        assert [f["origin_dest_surl"] for f in files] == ["d/a", "d/b"]
+        assert all(f["file_state"] == "FINISHED" for f in files)
+
+    @pytest.mark.parametrize("naming", ["sequential", "uuid", "date"])
+    def test_retries_grouped_per_planned_transfer(self, tmp_path, monkeypatch, naming):
+        # (f1 -> a): one FTS3 retry in each round → 2; (f1 -> b): none
+        _, seen = self._run(tmp_path, monkeypatch, naming)
+        assert seen["dist"] == {"2": 1}
 
 
 # ---------------------------------------------------------------------------

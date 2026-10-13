@@ -332,6 +332,7 @@ class TestHarvestAll:
             [_fts_file(file_id=1, source_surl="https://src/a")], [retry_data], [])
         _, retry_recs, _ = harvest_all([_subjob("job-1")], client)
         assert retry_recs[0]["source_surl"] == "https://src/a"
+        assert retry_recs[0]["dest_surl"] == "https://dst/f"
 
     def test_multiple_files_retries_fetched_per_file(self):
         files = [_fts_file(file_id=1), _fts_file(file_id=2)]
