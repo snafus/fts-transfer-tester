@@ -1552,6 +1552,31 @@ resume(run_id):
 | Interoperability | Rucio rule trigger post-campaign | Invoke Rucio REST to register transferred files as replicas |
 | Reporting | IVOA-compatible provenance metadata | Attach campaign provenance to report for archive ingest |
 
+### Statistics and analytics (audit 2026-10-14, post-v0.2.0)
+
+All items derive from data already persisted (`normalized/`, `raw/jobs/`), so `--recompute` backfills old runs unless noted.
+
+**Correctness / interpretation**
+
+| Item | Problem | Proposal |
+|---|---|---|
+| Failure-reason grouping | `_categorise_failures` keys on the raw FTS3 `reason`; reasons embed URLs/paths, so failures can fragment into one bucket per file | Normalise (strip URLs, hosts, numbers) and classify by phase (SOURCE / DESTINATION / TRANSFER) and HTTP/errno code; keep raw reasons alongside |
+| Byte-weighted throughput | `throughput_mean` is an unweighted per-file mean, dominated by small files when sizes are mixed | Add `throughput_byte_weighted` = Σ filesize / Σ tx_duration |
+| Agg TP across retry rounds | With framework retry the campaign window spans the inter-round gap (retry delay + polling), diluting Agg TP | Report Agg TP for round 0 and per round alongside the whole-campaign figure |
+| FTS3 internal retries and `start_time` | If FTS3 resets `start_time` per internal attempt, earlier failed attempt time is lost from wall/window metrics (unverified) | Verify against `raw/retries/` `datetime`; if confirmed, widen the window using retry timestamps |
+| Agent throughput unit | `throughput` × 1048576 assumes FTS3 reports MiB/s; not yet validated against real data | Validate median(agent / (filesize / tx_duration)) ≈ 1 on real runs; optionally record the ratio in the snapshot as a sanity check |
+
+**Gaps**
+
+| Item | Value | Data source |
+|---|---|---|
+| Queue latency and makespan | Submit → first start, per-file submit → start p50/p90, submit → last finish; FTS3 scheduling delay is currently invisible | Job `submit_time` in `raw/jobs/` (server clock, same as file timestamps) |
+| Per-destination breakdown | Weighted multi-destination campaigns only report campaign-wide figures, hiding a slow or failing endpoint | Group by destination prefix: success rate, throughput, failure reasons |
+| First-pass success rate | With framework retry, `success_rate` is the final outcome and hides first-attempt reliability | Round-0 outcomes (`retry_round` in records) |
+| Volume metrics | Total bytes transferred, mean file size, FTS3 internal retry count missing from snapshot/summary | `normalized/` file and retry records |
+| Sequence summary columns | `mean_concurrency`, `failure_rate`, `retry_rate`, duration p50/p90 are in the snapshot but not in `_SUMMARY_METRICS` | Snapshot (no recompute needed) |
+| Steady-state throughput (lower priority) | Throughput excluding ramp-up and tail, for comparing short and long campaigns | Timeseries / concurrency timeline |
+
 ### YAML Config Schema (full example)
 
 ```yaml
