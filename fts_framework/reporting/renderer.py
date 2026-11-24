@@ -126,6 +126,7 @@ def render_console(snapshot, config):
         config.get("fts", {}).get("endpoint", "<unknown>")
     ))
     _add(" Copy mode: {}".format(_copy_mode_summary(snapshot)))
+    _add(" Streams  : {}".format(_streams_summary(snapshot)))
     if snapshot.get("copy_mode_mismatched_files"):
         _add("  *** WARNING: {} ***".format(_copy_mode_mismatch_warning(snapshot)))
     _add(_SEP)
@@ -249,6 +250,7 @@ def render_markdown(snapshot, config, subjobs=None):
         "DISABLED" if snapshot.get("ssl_verify_disabled") else "ENABLED"
     ))
     _add("| Copy mode | {} |".format(_copy_mode_summary(snapshot)))
+    _add("| Streams | {} |".format(_streams_summary(snapshot)))
     max_files = snapshot.get("max_files")
     if max_files is not None:
         _add("| Max files (limit) | {} |".format(max_files))
@@ -615,6 +617,17 @@ def _copy_mode_summary(snapshot):
         snapshot.get("copy_mode_echoed_files", 0),
         snapshot.get("total_files", 0),
     )
+
+
+def _streams_summary(snapshot):
+    # type: (dict) -> str
+    """One-line description of the requested ``transfer.nostreams``."""
+    if "nostreams_requested" not in snapshot:
+        return "not recorded"
+    requested = snapshot["nostreams_requested"]
+    if requested is None:
+        return "FTS3 default (nostreams not set)"
+    return "{} requested".format(requested)
 
 
 def _copy_mode_mismatch_warning(snapshot):

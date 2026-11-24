@@ -803,3 +803,32 @@ class TestRenderTimeseriesCsv:
         assert len(rows) == 2
         assert "bucket_start" in rows[0]
         assert "active_transfers" in rows[0]
+
+
+# ---------------------------------------------------------------------------
+# Requested stream count in the run reports
+# ---------------------------------------------------------------------------
+
+class TestStreamsLine:
+    def test_console_shows_requested_count(self):
+        out = render_console(_base_snapshot(nostreams_requested=4), _base_config())
+        assert " Streams  : 4 requested" in out
+
+    def test_console_shows_default_when_unset(self):
+        out = render_console(_base_snapshot(nostreams_requested=None), _base_config())
+        assert " Streams  : FTS3 default (nostreams not set)" in out
+
+    def test_markdown_shows_requested_count(self):
+        md = render_markdown(_base_snapshot(nostreams_requested=8), _base_config())
+        assert "| Streams | 8 requested |" in md
+
+    def test_markdown_shows_default_when_unset(self):
+        md = render_markdown(_base_snapshot(nostreams_requested=None), _base_config())
+        assert "| Streams | FTS3 default (nostreams not set) |" in md
+
+    def test_snapshot_without_the_key_is_not_reported_as_default(self):
+        """Snapshots written before the field existed don't claim a value."""
+        snap = _base_snapshot()
+        snap.pop("nostreams_requested", None)
+        assert " Streams  : not recorded" in render_console(snap, _base_config())
+        assert "| Streams | not recorded |" in render_markdown(snap, _base_config())

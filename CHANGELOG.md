@@ -15,6 +15,18 @@ behaviour).
   `oidc.fetch_retry_max` (default 4) and `oidc.fetch_retry_backoff_s`
   (default 5); `fetch_retry_max: 0` restores the previous single-attempt
   behaviour.
+- The requested stream count (`transfer.nostreams`) is shown in every
+  summary: the run report header (console, markdown, HTML), the snapshot
+  (`nostreams_requested`), and the sequence summaries, as a `Streams` column
+  in the per-case and per-run tables and a `nostreams` column in
+  `summary.csv` and `summary.json`. An unset `nostreams` reads `default`
+  (FTS3 decides). This is the value requested, not the count FTS3 used.
+
+### Changed
+
+- `summary.csv` gains a `nostreams` column between the `param_*` columns and
+  the metrics. Runs made before this version show `-` until rebuilt with
+  `fts-sequence --recompute <SEQUENCE_DIR>`.
 
 ## [0.2.0] - 2026-10-13
 

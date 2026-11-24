@@ -524,3 +524,131 @@ class TestSkippedTrials:
             with open(os.path.join(tmp, "reports", "summary.md")) as fh:
                 content = fh.read()
         assert "skipped" not in content.lower()
+
+
+# ---------------------------------------------------------------------------
+# Requested stream count
+# ---------------------------------------------------------------------------
+
+class TestStreams:
+    def _generate(self, tmp, state, snapshots):
+        """Mark (case, trial) -> snapshot entries completed and build reports."""
+        runs_dir = os.path.join(tmp, "runs")
+        os.makedirs(runs_dir)
+        for (ci, ti), snap in snapshots.items():
+            run_id = "run_c{}_t{}".format(ci, ti)
+            _mark_completed_inmem(state, ci, ti, run_id)
+            _write_snapshot(runs_dir, run_id, snap)
+        seq_reporter.generate_summary(tmp, state, runs_dir=runs_dir)
+        reports = os.path.join(tmp, "reports")
+        with open(os.path.join(reports, "summary.json")) as fh:
+            data = json.load(fh)
+        with open(os.path.join(reports, "summary.csv")) as fh:
+            csv_rows = list(csv.DictReader(fh))
+        with open(os.path.join(reports, "summary.md")) as fh:
+            md = fh.read()
+        return data, csv_rows, md
+
+    def _md_table(self, md, heading):
+        """Return the table under *heading* as a list of cell lists."""
+        section = md.split(heading, 1)[1].split("\n## ", 1)[0]
+        return [
+            [c.strip() for c in line.strip().strip("|").split("|")]
+            for line in section.splitlines()
+            if line.startswith("|") and not line.startswith("|---")
+        ]
+
+    def test_requested_count_in_every_summary(self, capsys):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = _make_state(n_cases=1, trials=2)
+            data, csv_rows, md = self._generate(tmp, state, {
+                (0, 0): _default_snapshot(nostreams_requested=4),
+                (0, 1): _default_snapshot(nostreams_requested=4),
+            })
+        out = capsys.readouterr().out
+
+        assert [r["nostreams"] for r in data["runs"]] == [4, 4]
+        assert data["cases"][0]["nostreams"] == 4
+        assert [r["nostreams"] for r in csv_rows] == ["4", "4"]
+
+        by_case = self._md_table(md, "## Results by Case")
+        assert by_case[0][:3] == ["Case", "transfer.max_files", "Streams"]
+        assert by_case[1][2] == "4"
+
+        runs = self._md_table(md, "## Individual Runs")
+        col = runs[0].index("Streams")
+        assert [r[col] for r in runs[1:]] == ["4", "4"]
+        assert all(len(r) == len(runs[0]) for r in runs)
+
+        lines = out.splitlines()
+        header_at = [i for i, line in enumerate(lines)
+                     if line.startswith("Case ")][0]
+        header, row = lines[header_at], lines[header_at + 2]
+        start = header.index("Streams")
+        assert row[start:start + len("Streams")].strip() == "4"
+
+    def test_unset_nostreams_shown_as_default(self, capsys):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = _make_state(n_cases=1, trials=1)
+            data, csv_rows, md = self._generate(tmp, state, {
+                (0, 0): _default_snapshot(nostreams_requested=None),
+            })
+        assert data["runs"][0]["nostreams"] == "default"
+        assert data["cases"][0]["nostreams"] == "default"
+        assert csv_rows[0]["nostreams"] == "default"
+        assert self._md_table(md, "## Results by Case")[1][2] == "default"
+
+    def test_unknown_for_failed_trial_and_old_snapshot(self, capsys):
+        """No snapshot, or one predating the field, is '-' rather than 'default'."""
+        with tempfile.TemporaryDirectory() as tmp:
+            state = _make_state(n_cases=2, trials=1)
+            _mark_failed_inmem(state, 1, 0)
+            data, csv_rows, md = self._generate(tmp, state, {
+                (0, 0): _default_snapshot(),          # no nostreams_requested key
+            })
+        assert [r["nostreams"] for r in data["runs"]] == [None, None]
+        assert [c["nostreams"] for c in data["cases"]] == [None, None]
+        assert [r["nostreams"] for r in csv_rows] == ["", ""]
+        by_case = self._md_table(md, "## Results by Case")
+        assert [r[2] for r in by_case[1:]] == ["-", "-"]
+
+    def test_case_value_taken_from_completed_trials(self, capsys):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = _make_state(n_cases=1, trials=2)
+            _mark_failed_inmem(state, 0, 1)
+            data, _, _ = self._generate(tmp, state, {
+                (0, 0): _default_snapshot(nostreams_requested=2),
+            })
+        assert data["cases"][0]["nostreams"] == 2
+
+    def test_case_with_differing_trials_is_mixed(self, capsys):
+        """A baseline edited between a run and its resume gives differing trials."""
+        with tempfile.TemporaryDirectory() as tmp:
+            state = _make_state(n_cases=1, trials=2)
+            data, _, md = self._generate(tmp, state, {
+                (0, 0): _default_snapshot(nostreams_requested=2),
+                (0, 1): _default_snapshot(nostreams_requested=None),
+            })
+        assert data["cases"][0]["nostreams"] == "mixed"
+        assert self._md_table(md, "## Results by Case")[1][2] == "mixed"
+
+    def test_no_duplicate_column_when_nostreams_is_swept(self, capsys):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = _make_state(n_cases=2, trials=1)
+            for i, case in enumerate(state["cases"]):
+                case["params"] = {"transfer.nostreams": (i + 1) * 2}
+            data, csv_rows, md = self._generate(tmp, state, {
+                (0, 0): _default_snapshot(nostreams_requested=2),
+                (1, 0): _default_snapshot(nostreams_requested=4),
+            })
+        out = capsys.readouterr().out
+
+        by_case = self._md_table(md, "## Results by Case")
+        assert by_case[0][:3] == ["Case", "transfer.nostreams", "Trials"]
+        assert "Streams" not in by_case[0]
+        assert [r[1] for r in by_case[1:]] == ["2", "4"]
+        assert "Streams" not in out
+        # Per-run outputs keep the column: it is cheap there and keeps the
+        # CSV schema independent of what was swept.
+        assert [r["nostreams"] for r in csv_rows] == ["2", "4"]
+        assert "Streams" in self._md_table(md, "## Individual Runs")[0]
