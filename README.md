@@ -303,6 +303,8 @@ Add an `oidc` section to your campaign YAML:
 oidc:
   enabled: true
   env_file: ".env"    # optional; defaults to ".env" in the working directory
+  fetch_retry_max: 4          # optional; retries per token fetch on transient errors (0 = off)
+  fetch_retry_backoff_s: 5    # optional; wait before the first retry, doubling up to 60s
 
   roles:
     fts_submit:
@@ -363,6 +365,24 @@ Two placeholder strings are substituted in `scope` values at fetch time:
 Example: if `transfer.dst_prefix` is `https://storage.example.org/data/test`, then `{dst_prefix_path}` resolves to `/data/test`.
 
 Multiple audiences are space-separated in the `scope` string (the standard WLCG convention). FTS3 does not have a dedicated audience field in the client credentials grant — include audiences in the `audience` parameter or embed them in the scope as required by your IAM.
+
+### Transient token endpoint failures
+
+A token fetch that fails transiently is retried with exponential backoff rather than aborting the run. This applies to every fetch: at startup, `--check-tokens`, the per-trial refresh in sequence runs, and the mid-poll refresh after a 401.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `oidc.fetch_retry_max` | int | `4` | Retries after the first attempt, per token fetch. `0` disables retry. |
+| `oidc.fetch_retry_backoff_s` | int | `5` | Seconds to wait before the first retry. Doubles on each retry, capped at 60s. Minimum 1. |
+
+| Outcome | Retried |
+|---|---|
+| Connection error, timeout | Yes |
+| HTTP 429, any HTTP 5xx (e.g. a `502 Bad Gateway` from the proxy in front of the IAM) | Yes |
+| Other HTTP 4xx (bad client credentials, rejected scope or audience) | No |
+| TLS verification failure, non-JSON body, response without `access_token` | No |
+
+With the defaults a fetch waits 5 + 10 + 20 + 40 = 75s across five attempts before failing with the original error plus `(gave up after 5 attempts)`. Each retry logs a `WARNING` with the attempt number and the reason. Raise `fetch_retry_max` to ride out longer IAM restarts in unattended sequence runs: each further retry adds 60s.
 
 ### Equivalent curl request
 
@@ -1216,7 +1236,7 @@ Integration tests require a live FTS3 endpoint:
 FTS_INTEGRATION_ENDPOINT=https://fts.example.org:8446 pytest tests/integration/ -v
 ```
 
-**1129 unit tests** cover all modules: config loader (including OIDC resolution and scope templates), auth env loader, OIDC token fetch, inventory, destination planner (single and weighted multi-destination), checksum fetcher, X.509 proxy auth, FTS client, HTTP-TPC copy mode, submission (including 500-recovery, its behavior under concurrently-submitting cases, and per-file token forwarding), poller, collector, persistence, resume controller, metrics engine, cleanup manager, reporting renderer, runner orchestration, and sequence runner (loader, state, reporter, per-trial OIDC refresh, parallel_cases execution, trial_major/case_major order).
+**1196 unit tests** cover all modules: config loader (including OIDC resolution and scope templates), auth env loader, OIDC token fetch (including transient-failure retry), inventory, destination planner (single and weighted multi-destination), checksum fetcher, X.509 proxy auth, FTS client, HTTP-TPC copy mode, submission (including 500-recovery, its behavior under concurrently-submitting cases, and per-file token forwarding), poller, collector, persistence, resume controller, metrics engine, cleanup manager, reporting renderer, runner orchestration, and sequence runner (loader, state, reporter, per-trial OIDC refresh, parallel_cases execution, trial_major/case_major order).
 
 ---
 

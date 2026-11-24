@@ -285,7 +285,7 @@ class TestOidcPerTrialRefresh:
         fetch_calls = []
 
         def _fake_fetch(endpoint, client_id, client_secret, scope, ssl_verify,
-                        audience=None):
+                        audience=None, **kwargs):
             fetch_calls.append(scope)
             return "tok_for_{}".format(scope.replace(" ", "_"))
 

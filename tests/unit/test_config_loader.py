@@ -900,6 +900,59 @@ class TestOidcTokenResolution:
         config = load(path)
         assert config["tokens"]["fts_submit"] == "t"
 
+    def test_fetch_retry_settings_passed_to_fetch_token(self, tmp_path, monkeypatch):
+        """oidc.fetch_retry_* reach fetch_token; defaults apply when omitted."""
+        from fts_framework.auth import oidc as oidc_mod
+        monkeypatch.setenv("FTS_CLIENT_ID",    "cid_fts")
+        monkeypatch.setenv("FTS_CLIENT_SECRET", "csec_fts")
+        seen = []
+
+        def _fake_fetch(*args, **kwargs):
+            seen.append((kwargs["retry_max"], kwargs["retry_backoff_s"]))
+            return "tok"
+
+        monkeypatch.setattr(oidc_mod, "fetch_token", _fake_fetch)
+        role = {
+            "fts_submit": {
+                "token_endpoint":   "https://iam.example.org/token",
+                "client_id_var":    "FTS_CLIENT_ID",
+                "client_secret_var": "FTS_CLIENT_SECRET",
+                "scope":            "openid",
+            },
+        }
+
+        path, data = self._oidc_config(tmp_path, roles=role)
+        data["tokens"] = {"source_read": "s", "dest_write": "d"}
+        write_yaml(data, path)
+        config = load(path)
+        assert config["oidc"]["fetch_retry_max"] == oidc_mod.DEFAULT_RETRY_MAX
+        assert config["oidc"]["fetch_retry_backoff_s"] == oidc_mod.DEFAULT_RETRY_BACKOFF_S
+
+        data["oidc"]["fetch_retry_max"] = 9
+        data["oidc"]["fetch_retry_backoff_s"] = 2
+        write_yaml(data, path)
+        load(path)
+
+        assert seen == [
+            (oidc_mod.DEFAULT_RETRY_MAX, oidc_mod.DEFAULT_RETRY_BACKOFF_S),
+            (9, 2),
+        ]
+
+    @pytest.mark.parametrize("key,value", [
+        ("fetch_retry_max", -1),
+        ("fetch_retry_max", "3"),
+        ("fetch_retry_max", 2.0),
+        ("fetch_retry_backoff_s", 0),
+        ("fetch_retry_backoff_s", "5"),
+    ])
+    def test_invalid_fetch_retry_settings_raise(self, tmp_path, key, value):
+        """Bad oidc.fetch_retry_* values fail validation before any fetch."""
+        path, data = self._oidc_config(tmp_path)
+        data["oidc"][key] = value
+        write_yaml(data, path)
+        with pytest.raises(ConfigError, match="oidc.{}".format(key)):
+            load(path)
+
     def test_missing_client_id_var_raises(self, tmp_path, monkeypatch):
         """Missing env var for client_id raises ConfigError."""
         # Don't set FTS_CLIENT_ID — only set source/dest vars

@@ -95,6 +95,8 @@ _DEFAULTS = {
     "oidc": {
         "enabled": False,
         "env_file": ".env",
+        "fetch_retry_max": _oidc.DEFAULT_RETRY_MAX,
+        "fetch_retry_backoff_s": _oidc.DEFAULT_RETRY_BACKOFF_S,
         "roles": {},
     },
     "run": {
@@ -569,7 +571,12 @@ def _resolve_oidc_tokens(config):
 
         logger.info("Fetching OIDC token for role %r from %s", role, endpoint)
         tokens[role] = _oidc.fetch_token(
-            endpoint, client_id, client_secret, scope, ssl_verify, audience=audience
+            endpoint, client_id, client_secret, scope, ssl_verify,
+            audience=audience,
+            retry_max=oidc_cfg.get("fetch_retry_max", _oidc.DEFAULT_RETRY_MAX),
+            retry_backoff_s=oidc_cfg.get(
+                "fetch_retry_backoff_s", _oidc.DEFAULT_RETRY_BACKOFF_S
+            ),
         )
 
 
@@ -699,6 +706,15 @@ def _validate_oidc(config):
     oidc_cfg = config.get("oidc", {})
     if not oidc_cfg.get("enabled"):
         return
+
+    _require_int(
+        oidc_cfg.get("fetch_retry_max", _oidc.DEFAULT_RETRY_MAX),
+        "oidc.fetch_retry_max", min_val=0,
+    )
+    _require_int(
+        oidc_cfg.get("fetch_retry_backoff_s", _oidc.DEFAULT_RETRY_BACKOFF_S),
+        "oidc.fetch_retry_backoff_s", min_val=1,
+    )
 
     roles_cfg = oidc_cfg.get("roles") or {}
     for role, role_cfg in roles_cfg.items():
