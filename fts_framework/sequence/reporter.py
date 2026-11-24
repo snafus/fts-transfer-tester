@@ -41,6 +41,12 @@ _SUMMARY_METRICS = [
     ("threshold_passed",                  "Threshold Passed"),
 ]
 
+# Sweep parameter key that already shows the stream count as a case column.
+_NOSTREAMS_PARAM = "transfer.nostreams"
+
+# Row value when ``transfer.nostreams`` is unset and FTS3 picks the count.
+STREAMS_DEFAULT = "default"
+
 # Keys whose values are in bytes/s and must be formatted as MB/s.
 _THROUGHPUT_KEYS = frozenset([
     "aggregate_throughput_bytes_per_s",
@@ -104,6 +110,33 @@ def _load_snapshot(run_id, runs_dir):
         return json.load(fh)
 
 
+def _requested_streams(snapshot):
+    # type: (object) -> object
+    """Return the stream count a trial requested.
+
+    An int when ``transfer.nostreams`` was set, ``STREAMS_DEFAULT`` when it
+    was left for FTS3 to decide, and None when unknown (no snapshot, or one
+    written before the value was recorded).
+    """
+    if not snapshot or "nostreams_requested" not in snapshot:
+        return None
+    requested = snapshot["nostreams_requested"]
+    return STREAMS_DEFAULT if requested is None else requested
+
+
+def _case_streams(case_rows):
+    # type: (list) -> object
+    """Return the stream count shared by a case's trials, or ``"mixed"``."""
+    values = []
+    for row in case_rows:
+        value = row.get("nostreams")
+        if value is not None and value not in values:
+            values.append(value)
+    if not values:
+        return None
+    return values[0] if len(values) == 1 else "mixed"
+
+
 def _collect_rows(state, runs_dir):
     # type: (dict, str) -> list
     """Build one row dict per trial."""
@@ -125,6 +158,7 @@ def _collect_rows(state, runs_dir):
             }
             for k, v in case["params"].items():
                 row["param_" + k] = v
+            row["nostreams"] = _requested_streams(snapshot)
             for key, _ in _SUMMARY_METRICS:
                 row[key] = snapshot.get(key) if snapshot else None
             rows.append(row)
@@ -148,6 +182,7 @@ def _aggregate_cases(state, rows):
         agg = {
             "case_index":  ci,
             "params":      case["params"],
+            "nostreams":   _case_streams(case_rows),
             "n_total":     len(case_rows),
             "n_completed": len(completed),
             "n_failed":    failed_count,
@@ -223,7 +258,7 @@ def _write_csv(sequence_dir, rows):
     metric_cols = [key for key, _ in _SUMMARY_METRICS]
     fixed_cols  = ["sequence_id", "case_index", "trial_index",
                    "run_id", "status", "error"]
-    all_cols    = fixed_cols + param_cols + metric_cols
+    all_cols    = fixed_cols + param_cols + ["nostreams"] + metric_cols
 
     path = os.path.join(sequence_dir, "reports", "summary.csv")
     with open(path, "w", newline="") as fh:
@@ -260,6 +295,8 @@ def _write_markdown(sequence_dir, rows, aggregates, state):
     # Per-case aggregate table
     if aggregates:
         param_keys = list(aggregates[0]["params"].keys())
+        # A swept transfer.nostreams is already one of the param columns.
+        show_streams = _NOSTREAMS_PARAM not in param_keys
 
         lines.append("## Results by Case")
         lines.append("")
@@ -267,6 +304,7 @@ def _write_markdown(sequence_dir, rows, aggregates, state):
         headers = (
             ["Case"]
             + param_keys
+            + (["Streams"] if show_streams else [])
             + ["Trials", "Success Rate", "Agg TP (MB/s)", "Peak Agg TP (MB/s)",
                "TP Mean (MB/s)", "TP p10 (MB/s)", "TP p50 (MB/s)",
                "TP p90 (MB/s)",
@@ -295,6 +333,8 @@ def _write_markdown(sequence_dir, rows, aggregates, state):
             row_vals = (
                 [str(agg["case_index"])]
                 + param_vals
+                + ([_fmt_val("nostreams", agg.get("nostreams"))]
+                   if show_streams else [])
                 + [
                     trials_str,
                     _mv("success_rate"),
@@ -314,15 +354,16 @@ def _write_markdown(sequence_dir, rows, aggregates, state):
     # Individual runs table
     lines.append("## Individual Runs")
     lines.append("")
-    lines.append("| Case | Trial | Run ID | Status | Files | Max Conc | "
+    lines.append("| Case | Trial | Run ID | Status | Streams | Files | Max Conc | "
                  "Success Rate | Agg TP (MB/s) | TP Mean (MB/s) | Wall (s) |")
-    lines.append("|---|---|---|---|---|---|---|---|---|---|")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|")
     for r in rows:
-        lines.append("| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
+        lines.append("| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
             r["case_index"],
             r["trial_index"],
             r["run_id"] or "-",
             r["status"],
+            _fmt_val("nostreams",                        r.get("nostreams")),
             _fmt_val("total_files",                      r.get("total_files")),
             _fmt_val("peak_concurrency",                 r.get("peak_concurrency")),
             _fmt_val("success_rate",                     r.get("success_rate")),
@@ -394,6 +435,9 @@ def print_console_summary(sequence_dir, state, rows, aggregates):
     columns.append(("Case", lambda agg: str(agg["case_index"])))
     for pk in param_keys:
         columns.append((pk, lambda agg, _pk=pk: str(agg["params"].get(_pk, "-"))))
+    if _NOSTREAMS_PARAM not in param_keys:
+        columns.append(("Streams",
+                        lambda agg: _fmt_val("nostreams", agg.get("nostreams"))))
     columns.append(("Trials", lambda agg: "{}/{}{}".format(
         agg["n_completed"],
         agg["n_total"] - agg.get("n_skipped", 0),

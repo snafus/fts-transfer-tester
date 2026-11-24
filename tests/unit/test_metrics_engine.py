@@ -1051,3 +1051,24 @@ class TestComputeTimeseries:
         snap = compute([f1, f2], [], cfg, "r")
         assert snap["aggregate_throughput_bytes_per_s"] == pytest.approx(40.0)
         assert snap["peak_aggregate_throughput_bytes_per_s"] == pytest.approx(100.0)
+
+
+# ---------------------------------------------------------------------------
+# Requested stream count
+# ---------------------------------------------------------------------------
+
+class TestNostreamsRequested:
+    def test_recorded_when_set(self):
+        cfg = _config()
+        cfg["transfer"] = {"nostreams": 4}
+        assert compute([_file()], [], cfg, "r")["nostreams_requested"] == 4
+
+    def test_none_when_unset(self):
+        cfg = _config()
+        cfg["transfer"] = {"nostreams": None}
+        assert compute([_file()], [], cfg, "r")["nostreams_requested"] is None
+
+    def test_none_when_transfer_section_absent(self):
+        snap = compute([_file()], [], _config(), "r")
+        assert "nostreams_requested" in snap
+        assert snap["nostreams_requested"] is None

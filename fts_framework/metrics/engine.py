@@ -191,6 +191,7 @@ def compute(file_records, retry_records, config, run_id):
     peak_aggregate_throughput = max(peak_candidates) if peak_candidates else None
 
     max_files = config.get("transfer", {}).get("max_files")
+    nostreams_requested = config.get("transfer", {}).get("nostreams")
 
     # --- Step 9: copy-mode echo check ---
     # FTS3 does not report the TPC mode actually used; the strongest REST
@@ -209,6 +210,10 @@ def compute(file_records, retry_records, config, run_id):
         "test_label": test_label,
         "generated_at": _now_iso(),
         "max_files": max_files,
+
+        # transfer.nostreams as submitted (None = not sent, FTS3 decides).
+        # The requested value only: file records do not report streams used.
+        "nostreams_requested": nostreams_requested,
 
         # HTTP-TPC copy mode (None = server default, pull with fallback)
         "copy_mode_requested": copy_mode_requested,

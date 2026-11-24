@@ -232,7 +232,7 @@ The `tokens` YAML section may be omitted entirely if all three roles are satisfi
 | `priority` | int | `3` | FTS3 job priority 1 (lowest) to 5 (highest) |
 | `activity` | string | `"default"` | FTS3 activity share label |
 | `unmanaged_tokens` | bool | `false` | (Not yet implemented — reserved for future FTS3 unmanaged-token mode.) |
-| `nostreams` | int \| null | `null` | Number of parallel TCP/HTTP streams per file transfer. When `null` (or omitted) the parameter is not sent and the FTS3 optimizer decides. Protocol-dependent: silently ignored by endpoints that do not support it. Must be a whole-number integer ≥ 1 in YAML (use `null` or omit the key to let FTS3 decide — note that `None` with a capital N is a YAML string, not null). |
+| `nostreams` | int \| null | `null` | Number of parallel TCP/HTTP streams per file transfer. When `null` (or omitted) the parameter is not sent and the FTS3 optimizer decides. Protocol-dependent: silently ignored by endpoints that do not support it. Must be a whole-number integer ≥ 1 in YAML (use `null` or omit the key to let FTS3 decide — note that `None` with a capital N is a YAML string, not null). The requested value is shown in the run report header and in the sequence summaries (see [Stream count in summaries](#stream-count-in-summaries)). |
 | `copy_mode` | string \| null | `null` | HTTP third-party-copy mode: `pull` (destination fetches) or `push` (source sends). `null` leaves the server default (pull, falling back to push). See [Push vs Pull](#push-vs-pull-http-tpc-copy-mode). |
 | `job_metadata` | dict | `{}` | User-supplied key/value pairs merged into `job_metadata`. Framework keys (`run_id`, `chunk_index`, `retry_round`, `test_label`) always take priority. |
 
@@ -862,6 +862,28 @@ The sequence reporter reads `metrics/snapshot.json` from each completed trial an
 
 Failed trials are excluded from per-case aggregates but appear in the raw runs table.
 
+### Stream count in summaries
+
+Every summary carries the stream count each trial requested (`transfer.nostreams`), whether it comes from the baseline config or a per-case override:
+
+| Output | Where |
+|---|---|
+| Console summary, `summary.md` "Results by Case" | `Streams` column, after the parameter columns. Omitted when `transfer.nostreams` is itself a sweep parameter, since it is then already a parameter column. |
+| `summary.md` "Individual Runs" | `Streams` column |
+| `summary.csv`, `summary.json` runs | `nostreams` column / key, after the `param_*` columns |
+| `summary.json` cases | `nostreams` key |
+| Single-run report header (console, `report.md`, `report.html`) | `Streams` line |
+| `metrics/snapshot.json` | `nostreams_requested` |
+
+| Value | Meaning |
+|---|---|
+| a number | `transfer.nostreams` was set to it |
+| `default` | `nostreams` was not set, so it was not sent and FTS3 decided |
+| `-` (empty in the CSV) | Unknown: the trial failed before producing metrics, or the run predates this field. `fts-sequence --recompute <SEQUENCE_DIR>` fills it in for old runs from their stored config. |
+| `mixed` | Per-case tables only: the case's trials did not all request the same count (the baseline config was edited between a run and its resume). |
+
+This is the count **requested** at submission. FTS3 file records are not read for the count actually used, and an endpoint that does not support the parameter ignores it silently.
+
 ---
 
 ## Programmatic Usage
@@ -1236,7 +1258,7 @@ Integration tests require a live FTS3 endpoint:
 FTS_INTEGRATION_ENDPOINT=https://fts.example.org:8446 pytest tests/integration/ -v
 ```
 
-**1196 unit tests** cover all modules: config loader (including OIDC resolution and scope templates), auth env loader, OIDC token fetch (including transient-failure retry), inventory, destination planner (single and weighted multi-destination), checksum fetcher, X.509 proxy auth, FTS client, HTTP-TPC copy mode, submission (including 500-recovery, its behavior under concurrently-submitting cases, and per-file token forwarding), poller, collector, persistence, resume controller, metrics engine, cleanup manager, reporting renderer, runner orchestration, and sequence runner (loader, state, reporter, per-trial OIDC refresh, parallel_cases execution, trial_major/case_major order).
+**1210 unit tests** cover all modules: config loader (including OIDC resolution and scope templates), auth env loader, OIDC token fetch (including transient-failure retry), inventory, destination planner (single and weighted multi-destination), checksum fetcher, X.509 proxy auth, FTS client, HTTP-TPC copy mode, submission (including 500-recovery, its behavior under concurrently-submitting cases, and per-file token forwarding), poller, collector, persistence, resume controller, metrics engine, cleanup manager, reporting renderer, runner orchestration, and sequence runner (loader, state, reporter, per-trial OIDC refresh, parallel_cases execution, trial_major/case_major order).
 
 ---
 

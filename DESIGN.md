@@ -359,6 +359,7 @@ Maps directly to FTS3 `/jobs/{id}/files` response fields:
     "run_id": str,
     "test_label": str,
     "generated_at": str,
+    "nostreams_requested": int,  # transfer.nostreams as submitted; None = FTS3 decides
 
     # Counts
     "total_files": int,
