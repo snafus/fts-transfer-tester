@@ -5,6 +5,17 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/) (0.x: minor bumps may change
 behaviour).
 
+## [Unreleased]
+
+### Added
+
+- OIDC token fetches retry transient failures (connection errors, timeouts,
+  HTTP 429 and 5xx) with exponential backoff, so a brief IAM outage no longer
+  aborts a sequence at the per-trial token refresh. Tunable with
+  `oidc.fetch_retry_max` (default 4) and `oidc.fetch_retry_backoff_s`
+  (default 5); `fetch_retry_max: 0` restores the previous single-attempt
+  behaviour.
+
 ## [0.2.0] - 2026-10-13
 
 ### Upgrade notes
