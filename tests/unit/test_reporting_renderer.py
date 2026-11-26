@@ -832,3 +832,44 @@ class TestStreamsLine:
         snap.pop("nostreams_requested", None)
         assert " Streams  : not recorded" in render_console(snap, _base_config())
         assert "| Streams | not recorded |" in render_markdown(snap, _base_config())
+
+
+class TestStreamsInEveryRunReport:
+    """render_all carries the stream count into each report file it writes."""
+
+    def _render(self, tmp_path, capsys, **snapshot_overrides):
+        import os
+        snap = _base_snapshot(**snapshot_overrides)
+        cfg = _base_config()
+        cfg["output"]["reports"] = {
+            "console": True, "json": True, "markdown": True, "html": True,
+        }
+        run_dir = os.path.join(str(tmp_path), snap["run_id"])
+        os.makedirs(os.path.join(run_dir, "reports"))
+        os.makedirs(os.path.join(run_dir, "metrics"))
+        renderer.render_all(snap, cfg, runs_dir=str(tmp_path))
+        out = {"console": capsys.readouterr().out}
+        for name, rel in (("snapshot", "metrics/snapshot.json"),
+                          ("summary", "reports/summary.json"),
+                          ("markdown", "reports/report.md"),
+                          ("html", "reports/report.html")):
+            with open(os.path.join(run_dir, rel)) as fh:
+                out[name] = fh.read()
+        return out
+
+    def test_requested_count(self, tmp_path, capsys):
+        out = self._render(tmp_path, capsys, nostreams_requested=4)
+        assert " Streams  : 4 requested" in out["console"]
+        assert "| Streams | 4 requested |" in out["markdown"]
+        assert "4 requested" in out["html"]
+        assert json.loads(out["snapshot"])["nostreams_requested"] == 4
+        assert json.loads(out["summary"])["nostreams_requested"] == 4
+
+    def test_fts3_default(self, tmp_path, capsys):
+        out = self._render(tmp_path, capsys, nostreams_requested=None)
+        label = "FTS3 default (nostreams not set)"
+        assert " Streams  : " + label in out["console"]
+        assert "| Streams | {} |".format(label) in out["markdown"]
+        assert label in out["html"]
+        assert json.loads(out["snapshot"])["nostreams_requested"] is None
+        assert json.loads(out["summary"])["nostreams_requested"] is None

@@ -28,6 +28,7 @@ Usage::
     job_id = submit_with_500_recovery(fts_client, payload, config, run_id, 0, 0)
 """
 
+import copy
 import json
 import logging
 import time
@@ -111,9 +112,6 @@ def build_payload(chunk_mapping, checksums, config, run_id, chunk_index, retry_r
         "activity": activity_cfg or "default",
     }
 
-    source_token = config["tokens"].get("source_read")
-    dest_token   = config["tokens"].get("dest_write")
-
     # Re-checked here: sequence sweep overrides are applied after config
     # validation, so a swept value has not been through the loader.
     copy_mode = transfer_cfg.get("copy_mode")
@@ -135,11 +133,7 @@ def build_payload(chunk_mapping, checksums, config, run_id, chunk_index, retry_r
             # checksums[src] is "adler32:<hex>"; FTS3 expects this
             # "ALGO:VALUE" format in the checksum field.
             entry["checksum"] = checksums[src]
-        # FTS3 3.12+ expects storage tokens per-file as arrays.
-        if source_token:
-            entry["source_tokens"] = [source_token]
-        if dest_token:
-            entry["destination_tokens"] = [dest_token]
+        _set_storage_tokens(entry, config["tokens"])
         files.append(entry)
 
     payload = {
@@ -184,6 +178,37 @@ def build_payload(chunk_mapping, checksums, config, run_id, chunk_index, retry_r
         chunk_index, retry_round, len(files),
     )
     return payload
+
+
+def _set_storage_tokens(entry, tokens):
+    # type: (dict, dict) -> None
+    """Set the storage tokens on one payload file entry, in place.
+
+    FTS3 3.12+ expects storage tokens per-file as arrays.  A role with no
+    token (always the case in ``auth.mode: x509``) has its key removed.
+    """
+    for key, role in (("source_tokens", "source_read"),
+                      ("destination_tokens", "dest_write")):
+        token = tokens.get(role)
+        if token:
+            entry[key] = [token]
+        else:
+            entry.pop(key, None)
+
+
+def restore_storage_tokens(payload, config):
+    # type: (dict, dict) -> dict
+    """Return a deep copy of *payload* carrying the config's storage tokens.
+
+    Persisted payloads have their tokens redacted, so one read back from
+    ``submitted_payloads/`` must pass through here before it is POSTed.
+    Using the live config rather than what was on disk also means a repost
+    never sends a token that has expired since the original attempt.
+    """
+    restored = copy.deepcopy(payload)
+    for entry in restored.get("files") or []:
+        _set_storage_tokens(entry, config["tokens"])
+    return restored
 
 
 def _build_job_metadata(config, run_id, chunk_index, retry_round, activity=None):

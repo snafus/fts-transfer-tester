@@ -196,6 +196,15 @@ class TestLoadAllTerminal:
 # load — crash-recovery (missing chunk resubmission)
 # ---------------------------------------------------------------------------
 
+def _without_tokens(payload):
+    """Return a copy of *payload* minus the storage tokens added at repost."""
+    stripped = json.loads(json.dumps(payload))
+    for entry in stripped["files"]:
+        entry.pop("source_tokens", None)
+        entry.pop("destination_tokens", None)
+    return stripped
+
+
 class TestLoadMissingChunkRecovery:
     def test_missing_payload_triggers_prescan_then_post(self, tmp_path):
         _setup_run(tmp_path, "r1")
@@ -342,7 +351,7 @@ class TestLoadUuidResubmission:
         client = _FakeClient([[], _FakeResponse(200, {"job_id": "job-new"})])
         load("r1", client, _config(destination_naming="sequential"), runs_dir=str(tmp_path))
 
-        assert client.post_payloads[0] == original_payload
+        assert _without_tokens(client.post_payloads[0]) == original_payload
 
     def test_default_config_without_transfer_section_behaves_sequential(self, tmp_path):
         # Old manifests / configs may lack a "transfer" key entirely.
@@ -360,7 +369,7 @@ class TestLoadUuidResubmission:
         client = _FakeClient([[], _FakeResponse(200, {"job_id": "job-new"})])
         load("r1", client, bare_config, runs_dir=str(tmp_path))
 
-        assert client.post_payloads[0] == original_payload
+        assert _without_tokens(client.post_payloads[0]) == original_payload
 
 
 # ---------------------------------------------------------------------------
@@ -581,3 +590,81 @@ class TestScanForJob:
         client = _FakeClient([jobs])
         result = _scan_for_job(client, "r1", 0, 0, 300)
         assert result == "good-job"
+
+
+# ---------------------------------------------------------------------------
+# load — storage tokens are restored from the config before a repost
+# ---------------------------------------------------------------------------
+
+def _write_redacted_payload(tmp_path, run_id, source="<REDACTED>", dest="<REDACTED>"):
+    """Persist a payload as store.write_payload leaves it: tokens redacted."""
+    path = _write_prod_payload(tmp_path, run_id, chunk_index=0, retry_round=0)
+    with open(path) as fh:
+        payload = json.load(fh)
+    for entry in payload["files"]:
+        entry["source_tokens"] = [source]
+        entry["destination_tokens"] = [dest]
+    with open(path, "w") as fh:
+        json.dump(payload, fh)
+    return path
+
+
+class TestLoadRestoresStorageTokens:
+    def test_repost_carries_current_config_tokens(self, tmp_path):
+        _setup_run(tmp_path, "r1")
+        _write_redacted_payload(tmp_path, "r1")
+        client = _FakeClient([[], _FakeResponse(200, {"job_id": "job-new"})])
+
+        load("r1", client, _config(), runs_dir=str(tmp_path))
+
+        posted = client.post_payloads[0]
+        assert len(posted["files"]) == 2
+        for entry in posted["files"]:
+            assert entry["source_tokens"] == ["tok_r"]
+            assert entry["destination_tokens"] == ["tok_w"]
+        assert "<REDACTED>" not in json.dumps(posted)
+
+    def test_stale_tokens_from_an_older_run_dir_are_replaced(self, tmp_path):
+        """Payloads written before redaction hold real, possibly expired, tokens."""
+        _setup_run(tmp_path, "r1")
+        _write_redacted_payload(tmp_path, "r1", source="old_src", dest="old_dst")
+        client = _FakeClient([[], _FakeResponse(200, {"job_id": "job-new"})])
+
+        load("r1", client, _config(), runs_dir=str(tmp_path))
+
+        posted = json.dumps(client.post_payloads[0])
+        assert "old_src" not in posted and "old_dst" not in posted
+        assert "tok_r" in posted and "tok_w" in posted
+
+    def test_no_token_keys_sent_when_config_has_no_storage_tokens(self, tmp_path):
+        """auth.mode x509 leaves config["tokens"] empty."""
+        _setup_run(tmp_path, "r1")
+        _write_redacted_payload(tmp_path, "r1")
+        cfg = _config()
+        cfg["tokens"] = {}
+        client = _FakeClient([[], _FakeResponse(200, {"job_id": "job-new"})])
+
+        load("r1", client, cfg, runs_dir=str(tmp_path))
+
+        for entry in client.post_payloads[0]["files"]:
+            assert "source_tokens" not in entry
+            assert "destination_tokens" not in entry
+
+    def test_reminted_attempt_is_posted_with_tokens_but_persisted_without(self, tmp_path):
+        _setup_run(tmp_path, "r1")
+        _write_redacted_payload(tmp_path, "r1")
+        client = _FakeClient([[], _FakeResponse(200, {"job_id": "job-new"})])
+
+        load("r1", client, _config(destination_naming="uuid"), runs_dir=str(tmp_path))
+
+        for entry in client.post_payloads[0]["files"]:
+            assert entry["source_tokens"] == ["tok_r"]
+            assert entry["destination_tokens"] == ["tok_w"]
+
+        payload_dir = os.path.join(str(tmp_path), "r1", "submitted_payloads")
+        names = sorted(os.listdir(payload_dir))
+        assert len(names) == 2          # original + reminted attempt
+        for name in names:
+            with open(os.path.join(payload_dir, name)) as fh:
+                text = fh.read()
+            assert "tok_r" not in text and "tok_w" not in text

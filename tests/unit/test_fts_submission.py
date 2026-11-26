@@ -743,3 +743,66 @@ class TestConcurrentRecoveryAcrossCases:
             assert results[i] == "job-{}".format(i)
 
 
+
+
+# ---------------------------------------------------------------------------
+# restore_storage_tokens
+# ---------------------------------------------------------------------------
+
+class TestRestoreStorageTokens:
+    def _redacted(self):
+        return {
+            "files": [
+                {"sources": ["s1"], "destinations": ["d1"],
+                 "source_tokens": ["<REDACTED>"],
+                 "destination_tokens": ["<REDACTED>"]},
+                {"sources": ["s2"], "destinations": ["d2"],
+                 "source_tokens": ["<REDACTED>"],
+                 "destination_tokens": ["<REDACTED>"]},
+            ],
+            "params": {"priority": 3},
+        }
+
+    def test_sets_config_tokens_on_every_file(self):
+        from fts_framework.fts.submission import restore_storage_tokens
+        restored = restore_storage_tokens(self._redacted(), _config())
+        for entry in restored["files"]:
+            assert entry["source_tokens"] == ["tok_source"]
+            assert entry["destination_tokens"] == ["tok_dest"]
+        assert restored["params"] == {"priority": 3}
+
+    def test_does_not_mutate_input(self):
+        from fts_framework.fts.submission import restore_storage_tokens
+        payload = self._redacted()
+        restore_storage_tokens(payload, _config())
+        assert payload == self._redacted()
+
+    def test_role_without_token_has_its_key_removed(self):
+        from fts_framework.fts.submission import restore_storage_tokens
+        cfg = _config()
+        cfg["tokens"].pop("source_read")
+        restored = restore_storage_tokens(self._redacted(), cfg)
+        for entry in restored["files"]:
+            assert "source_tokens" not in entry
+            assert entry["destination_tokens"] == ["tok_dest"]
+
+    def test_round_trips_a_built_payload_through_redaction(self):
+        from fts_framework.fts.submission import restore_storage_tokens
+        from fts_framework.persistence.store import redact_payload
+        built = build_payload(_mapping("a", "b"), {}, _config(), RUN_ID, 0, 0)
+        assert restore_storage_tokens(redact_payload(built), _config()) == built
+
+
+# ---------------------------------------------------------------------------
+# The stream count reported in summaries is the one in the submitted payload
+# ---------------------------------------------------------------------------
+
+class TestReportedStreamsMatchPayload:
+    @pytest.mark.parametrize("configured", [None, 1, 4, 16, "4", "None", 4.0, True])
+    def test_snapshot_value_equals_payload_param(self, configured):
+        from fts_framework.metrics.engine import compute
+        cfg = _config(nostreams=configured)
+        cfg["retry"]["min_success_threshold"] = 0.95
+        payload = build_payload(_mapping("a"), {}, cfg, RUN_ID, 0, 0)
+        snapshot = compute([], [], cfg, RUN_ID)
+        assert snapshot["nostreams_requested"] == payload["params"].get("nostreams")

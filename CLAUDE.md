@@ -100,6 +100,8 @@ Tokens must never appear in:
 
 The config copy written to `runs/<run_id>/config.yaml` must have all token values replaced with `"<REDACTED>"`.
 
+The POST /jobs body carries storage tokens per file (`source_tokens`, `destination_tokens`). `store.write_payload()` redacts them via `store.redact_payload()`, so a payload read back from `submitted_payloads/` has none: anything that reposts one (the resume path) must first call `fts.submission.restore_storage_tokens(payload, config)`. If the payload gains a new token-bearing field, extend `redact_payload` in the same change; `tests/unit/test_tokens_not_on_disk.py` greps a whole run directory for token values.
+
 ---
 
 ## 500-Recovery on Submission

@@ -191,7 +191,11 @@ def compute(file_records, retry_records, config, run_id):
     peak_aggregate_throughput = max(peak_candidates) if peak_candidates else None
 
     max_files = config.get("transfer", {}).get("max_files")
+    # Same rule as fts.submission.build_payload, which drops a non-integer
+    # value (possible from an unvalidated sequence override) with a warning.
     nostreams_requested = config.get("transfer", {}).get("nostreams")
+    if not isinstance(nostreams_requested, int) or isinstance(nostreams_requested, bool):
+        nostreams_requested = None
 
     # --- Step 9: copy-mode echo check ---
     # FTS3 does not report the TPC mode actually used; the strongest REST

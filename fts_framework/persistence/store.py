@@ -248,8 +248,10 @@ def write_payload(run_id, chunk_index, retry_round, payload,
     # type: (str, int, int, dict, str, str) -> str
     """Persist the POST body for a chunk before transmission.
 
-    Storage tokens (``source_token``, ``destination_token``) are redacted
-    from the persisted copy; the caller's dict is not modified.
+    Storage tokens are redacted from the persisted copy (see
+    ``redact_payload``); the caller's dict is not modified.  A payload read
+    back from disk therefore carries no usable tokens: the resume path
+    restores them from the live config before reposting.
 
     Args:
         run_id (str): Unique run identifier.
@@ -274,7 +276,7 @@ def write_payload(run_id, chunk_index, retry_round, payload,
         filename = "chunk_{:04d}_r{}.json".format(chunk_index, retry_round)
     rel_path = os.path.join("submitted_payloads", filename)
     abs_path = os.path.join(runs_dir, run_id, rel_path)
-    _write_json(abs_path, _redact_payload(payload))
+    _write_json(abs_path, redact_payload(payload))
     logger.debug("Payload written: %s", abs_path)
     return rel_path
 
@@ -413,14 +415,20 @@ def _manifest_path(run_id, runs_dir):
     return os.path.join(runs_dir, run_id, "manifest.json")
 
 
-def _redact_payload(payload):
+def redact_payload(payload):
     # type: (dict) -> dict
     """Return a deep copy of *payload* with storage token values replaced.
 
-    Replaces ``source_token`` and ``destination_token`` under ``params`` with
+    Replaces every per-file ``source_tokens`` / ``destination_tokens`` entry
+    (the format ``fts.submission.build_payload`` sends) and the job-level
+    ``source_token`` / ``destination_token`` under ``params`` with
     ``"<REDACTED>"``.  All other payload keys are preserved verbatim.
     """
     redacted = copy.deepcopy(payload)
+    for entry in redacted.get("files") or []:
+        for key in ("source_tokens", "destination_tokens"):
+            if key in entry:
+                entry[key] = ["<REDACTED>"] * len(entry[key])
     params = redacted.get("params")
     if isinstance(params, dict):
         for key in ("source_token", "destination_token"):
