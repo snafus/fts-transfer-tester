@@ -5,7 +5,7 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/) (0.x: minor bumps may change
 behaviour).
 
-## [Unreleased]
+## [0.3.0] - 2026-11-26
 
 ### Upgrade notes
 
@@ -13,7 +13,13 @@ behaviour).
   earlier hold storage tokens in `submitted_payloads/` (see *Security*).
   Redact them in place with
   `python tools/redact_payload_tokens.py runs/ sequences/`, after upgrading
-  every host that might resume those runs.
+  every host that might resume those runs: an older version resuming a
+  redacted run would repost the `<REDACTED>` placeholder as the token.
+- **Summary schema.** `summary.csv` gains a `nostreams` column between the
+  `param_*` columns and the metrics, and the per-case and per-run tables gain
+  a `Streams` column. The snapshot carries `nostreams_requested`. Runs made
+  before this version show `-` until rebuilt with
+  `fts-sequence --recompute <SEQUENCE_DIR>` (or `fts-run --recompute <RUN_ID>`).
 
 ### Security
 
@@ -23,7 +29,7 @@ behaviour).
   payload layout. They are now replaced with `<REDACTED>`. A resume that has
   to repost a persisted payload takes the tokens from the current config,
   which also means it no longer reposts tokens that have expired since the
-  original attempt.
+  original attempt (#22).
 
 ### Added
 
@@ -32,29 +38,17 @@ behaviour).
   aborts a sequence at the per-trial token refresh. Tunable with
   `oidc.fetch_retry_max` (default 4) and `oidc.fetch_retry_backoff_s`
   (default 5); `fetch_retry_max: 0` restores the previous single-attempt
-  behaviour.
+  behaviour (#20).
 - The requested stream count (`transfer.nostreams`) is shown in every
   summary: the run report header (console, markdown, HTML), the snapshot
   (`nostreams_requested`), and the sequence summaries, as a `Streams` column
   in the per-case and per-run tables and a `nostreams` column in
   `summary.csv` and `summary.json`. An unset `nostreams` reads `default`
-  (FTS3 decides). This is the value requested, not the count FTS3 used.
-
+  (FTS3 decides). The value is the one actually submitted, so a non-integer
+  sequence override that submission drops also reads `default`. It is not
+  the count FTS3 used (#21, #22).
 - `tools/redact_payload_tokens.py` redacts tokens in payloads persisted by
-  earlier versions.
-
-### Fixed
-
-- The stream count in summaries is the one actually submitted. A
-  non-integer `transfer.nostreams` from a sequence override (for example the
-  string `"4"`) is dropped at submission with a warning, and is now reported
-  as `default` rather than as the value that was not sent.
-
-### Changed
-
-- `summary.csv` gains a `nostreams` column between the `param_*` columns and
-  the metrics. Runs made before this version show `-` until rebuilt with
-  `fts-sequence --recompute <SEQUENCE_DIR>`.
+  earlier versions (#22).
 
 ## [0.2.0] - 2026-10-13
 
@@ -153,6 +147,7 @@ behaviour).
 
 Initial release.
 
+[0.3.0]: https://github.com/snafus/fts-transfer-tester/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/snafus/fts-transfer-tester/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/snafus/fts-transfer-tester/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/snafus/fts-transfer-tester/compare/v0.1.0...v0.1.1
