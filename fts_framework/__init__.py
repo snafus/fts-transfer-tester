@@ -6,4 +6,4 @@ Production-grade FTS3 REST transfer test framework.
 Python 3.6.8 compatible. Standard-library-first. REST-native.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
