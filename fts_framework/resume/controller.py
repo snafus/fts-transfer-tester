@@ -46,6 +46,7 @@ from datetime import datetime
 
 from fts_framework.destination import planner as dest_planner
 from fts_framework.fts import copy_mode as _copy_mode
+from fts_framework.fts import submission as _submission
 from fts_framework.exceptions import SubmissionError, TokenExpiredError
 from fts_framework.persistence import store
 
@@ -213,6 +214,8 @@ def _recover_or_submit(fts_client, config, run_id, chunk_index, retry_round,
             chunk_index, 0,
             "Cannot load payload {!r}: {}".format(payload_path, exc),
         )
+    # The persisted copy has its storage tokens redacted.
+    payload = _submission.restore_storage_tokens(payload, config)
 
     destination_naming = config.get("transfer", {}).get("destination_naming", "sequential")
     if destination_naming in dest_planner.REMINT_ON_RESUBMIT_MODES:

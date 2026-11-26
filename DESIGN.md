@@ -970,7 +970,7 @@ When `ssl_verify = false`:
 - Tokens are read from config YAML at startup and stored in memory only
 - Tokens are never written to disk, logs, or report files
 - `config.yaml` copied to run directory has token values replaced with `"<REDACTED>"`
-- Token values are never included in `manifest.json`, `submitted_payloads/`, or any report
+- Token values are never included in `manifest.json`, `submitted_payloads/`, or any report. The POST body does carry storage tokens (per-file `source_tokens` / `destination_tokens`), so `persistence.store.redact_payload` replaces them in the persisted copy, and `fts.submission.restore_storage_tokens` puts the live config's tokens back when the resume path reposts a payload read from disk
 
 ### Log Redaction
 
@@ -987,7 +987,7 @@ Applied to any log line that might include Authorization header content.
 ### Manifest Hygiene
 
 - `manifest.json` contains no credentials
-- `submitted_payloads/` contain no tokens (FTS3 job payload does not include tokens)
+- `submitted_payloads/` contain no tokens: the per-file storage tokens in the FTS3 job payload are redacted before the payload is written
 - File permissions on run directory: `0o700` (owner only)
 
 ### Audit Metadata

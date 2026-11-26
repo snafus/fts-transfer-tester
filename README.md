@@ -189,7 +189,7 @@ Three token roles are required. They may share the same value in single-IAM depl
 | `source_read` | Bearer token for WebDAV `Want-Digest` HEAD requests on source storage |
 | `dest_write` | Bearer token for WebDAV DELETE on destination storage (cleanup only) |
 
-Tokens are never written to disk. The config copy in `runs/<run_id>/config.yaml` has all token values replaced with `<REDACTED>`.
+Tokens are never written to disk. The config copy in `runs/<run_id>/config.yaml` has all token values replaced with `<REDACTED>`, and so do the job payloads kept in `runs/<run_id>/submitted_payloads/` (the per-file `source_tokens` / `destination_tokens`). A resume that has to repost a persisted payload takes the storage tokens from the current config instead. Run directories written by 0.2.0 or earlier still hold the tokens in their payload files: see [Removing tokens from older run directories](#removing-tokens-from-older-run-directories).
 
 #### Token resolution order (highest priority wins)
 
@@ -1073,9 +1073,22 @@ The resume controller:
 3. Re-attaches the poller to any jobs still in flight
 4. Skips already-terminal jobs and proceeds directly to harvest
 
+**Tokens on resume**: persisted payloads carry no tokens, so a chunk that has to be reposted gets its `source_tokens` / `destination_tokens` from the config of the resuming process. Those are the tokens current at resume time (freshly fetched when OIDC is enabled), not the ones from the interrupted attempt.
+
 **Note**: checksums are not persisted between runs. On resume, retry submissions omit checksum fields and FTS3 skips end-to-end checksum verification for those files.
 
 **Duplicate-job race on resume**: the pre-resubmission scan for a missing chunk uses a coarse (≥1 hour) time window and a single attempt. If resume happens outside that window, the scan can miss a still-live original job and create a genuine duplicate FTS3 job for the same chunk. With the default `transfer.destination_naming: sequential`, that duplicate targets the *identical* destination URL as the original — two transfer agents writing the same path. Set `transfer.destination_naming: uuid` or `date` (see [Destination Naming and Resubmission Safety](#destination-naming-and-resubmission-safety)) to eliminate this collision.
+
+### Removing tokens from older run directories
+
+Versions up to and including 0.2.0 wrote each job payload to `submitted_payloads/` with the storage tokens intact. To redact them in place, after upgrading:
+
+```bash
+python tools/redact_payload_tokens.py runs/ sequences/ --dry-run   # list affected files
+python tools/redact_payload_tokens.py runs/ sequences/             # rewrite them
+```
+
+Each directory is searched recursively for `submitted_payloads/`. Only the token values change; files that are already clean are left untouched. Do this only once every host that might resume those runs is upgraded: an older version resuming a redacted run would repost the `<REDACTED>` placeholder as the token. The script does not touch `raw/`, and it cannot revoke anything, so treat tokens that were on disk as exposed for as long as they were valid.
 
 ---
 
@@ -1258,7 +1271,7 @@ Integration tests require a live FTS3 endpoint:
 FTS_INTEGRATION_ENDPOINT=https://fts.example.org:8446 pytest tests/integration/ -v
 ```
 
-**1210 unit tests** cover all modules: config loader (including OIDC resolution and scope templates), auth env loader, OIDC token fetch (including transient-failure retry), inventory, destination planner (single and weighted multi-destination), checksum fetcher, X.509 proxy auth, FTS client, HTTP-TPC copy mode, submission (including 500-recovery, its behavior under concurrently-submitting cases, and per-file token forwarding), poller, collector, persistence, resume controller, metrics engine, cleanup manager, reporting renderer, runner orchestration, and sequence runner (loader, state, reporter, per-trial OIDC refresh, parallel_cases execution, trial_major/case_major order).
+**1237 unit tests** cover all modules: config loader (including OIDC resolution and scope templates), auth env loader, OIDC token fetch (including transient-failure retry), inventory, destination planner (single and weighted multi-destination), checksum fetcher, X.509 proxy auth, FTS client, HTTP-TPC copy mode, submission (including 500-recovery, its behavior under concurrently-submitting cases, and per-file token forwarding), poller, collector, persistence, resume controller, metrics engine, cleanup manager, reporting renderer, runner orchestration, and sequence runner (loader, state, reporter, per-trial OIDC refresh, parallel_cases execution, trial_major/case_major order).
 
 ---
 

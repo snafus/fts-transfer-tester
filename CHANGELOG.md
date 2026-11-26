@@ -7,6 +7,24 @@ behaviour).
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **Tokens in existing run directories.** Run directories written by 0.2.0 or
+  earlier hold storage tokens in `submitted_payloads/` (see *Security*).
+  Redact them in place with
+  `python tools/redact_payload_tokens.py runs/ sequences/`, after upgrading
+  every host that might resume those runs.
+
+### Security
+
+- Storage tokens are no longer written to `submitted_payloads/`. The persisted
+  copy of each job payload kept the per-file `source_tokens` and
+  `destination_tokens` in clear text, because redaction only covered an older
+  payload layout. They are now replaced with `<REDACTED>`. A resume that has
+  to repost a persisted payload takes the tokens from the current config,
+  which also means it no longer reposts tokens that have expired since the
+  original attempt.
+
 ### Added
 
 - OIDC token fetches retry transient failures (connection errors, timeouts,
@@ -21,6 +39,16 @@ behaviour).
   in the per-case and per-run tables and a `nostreams` column in
   `summary.csv` and `summary.json`. An unset `nostreams` reads `default`
   (FTS3 decides). This is the value requested, not the count FTS3 used.
+
+- `tools/redact_payload_tokens.py` redacts tokens in payloads persisted by
+  earlier versions.
+
+### Fixed
+
+- The stream count in summaries is the one actually submitted. A
+  non-integer `transfer.nostreams` from a sequence override (for example the
+  string `"4"`) is dropped at submission with a warning, and is now reported
+  as `default` rather than as the value that was not sent.
 
 ### Changed
 
